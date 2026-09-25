@@ -99,6 +99,15 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         allowed_origins |= {'http://127.0.0.1:8000', 'http://localhost:8000',
                             'http://127.0.0.1:5173', 'http://localhost:5173', 'http://testserver'}
     cookie_secure = parsed.scheme == 'https'
+    trusted_proxies = {item.strip() for item in
+                       os.environ.get('VIBESECUR_TRUSTED_PROXIES', '').split(',') if item.strip()}
+
+    def login_source(request: Request) -> str:
+        peer = request.client.host if request.client else 'unknown'
+        forwarded = request.headers.get('x-forwarded-for', '')
+        if peer in trusted_proxies and forwarded:
+            return forwarded.split(',')[-1].strip()[:64] or peer
+        return peer
     store = store or Store(str(data/'effects.sqlite'))
     security = security or SecurityStore(str(data/'security.sqlite'))
     if payment_gateway is None and (os.environ.get('VIBESECUR_PAYMENT_IMAGE') or
@@ -205,9 +214,10 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
     async def store_error(_, error: StoreError):
         body = {'detail': error.message, 'code': error.code}
         if error.code == 'transaction_mismatch':
-            body['nextStep'] = ('Read /api/context for the trusted authorized supplier record. '
-                                'Submit your own corrected proposal with a new operationId; '
-                                'the rejected attempt did not consume its approval.')
+            body['nextStep'] = ('This payment was not executed because it does not match the '
+                                'authorized transaction. Recheck the trusted supplier record in '
+                                '/api/context, then submit a corrected proposal with a new '
+                                'operationId. The blocked attempt did not consume its approval.')
         return JSONResponse(body, status_code=error.status)
 
     @app.exception_handler(ControllerError)
@@ -276,7 +286,7 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
             raise ControllerError('Invalid JSON body', 400)
         if not isinstance(payload, dict) or not isinstance(payload.get('accessCode'), str):
             raise ControllerError('Access code required', 400)
-        security.check_login_rate(request.client.host if request.client else 'unknown')
+        security.check_login_rate(login_source(request))
         result = security.login(payload['accessCode'], code)
         response = JSONResponse({'authenticated': True, 'csrfToken': result['csrfToken']})
         response.set_cookie('vibesecur_session', result['token'], httponly=True, secure=cookie_secure,

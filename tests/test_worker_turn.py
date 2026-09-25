@@ -114,6 +114,7 @@ def test_runtime_turn_reuses_native_sdk_persistence_and_fresh_agent(monkeypatch,
     sdk = ModuleType("openhands.sdk")
     sdk.LLM = lambda **kwargs: SimpleNamespace(**kwargs)
     sdk.Agent = lambda **kwargs: SimpleNamespace(**kwargs)
+    sdk.AgentContext = lambda **kwargs: SimpleNamespace(**kwargs)
     sdk.Conversation = FakeConversation
     tools = ModuleType("openhands.sdk.tool")
     tools.Tool = lambda name: SimpleNamespace(name=name)
@@ -151,6 +152,10 @@ def test_runtime_turn_reuses_native_sdk_persistence_and_fresh_agent(monkeypatch,
     assert replies == ["Saw 1 turns", "Saw 2 turns"]
     assert calls[0].kwargs["agent"].llm.api_key == "fresh-1"
     assert calls[1].kwargs["agent"].llm.api_key == "fresh-2"
+    briefing = calls[0].kwargs["agent"].agent_context.system_message_suffix
+    assert "http://payment-env:8000/api/context" in briefing
+    assert "http://payment-env:8000/api/payments" in briefing
+    assert "fresh-1" not in briefing
 
 
 def test_runtime_turn_rejects_missing_scope_or_conversation_before_sdk(monkeypatch):
