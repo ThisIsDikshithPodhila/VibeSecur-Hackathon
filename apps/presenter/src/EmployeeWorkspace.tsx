@@ -3,7 +3,7 @@ import { AlertCircle, ArrowRight, BriefcaseBusiness, Check, Circle, FileText, Lo
 import type { Run } from './types';
 import { AssistantConversation, type ConversationMarker } from './AssistantConversation';
 import {
-  activityFromRun, conversationFromRun, incidentOutcomeFromRun, incidentDispositionFromRun,
+  activityFromRun, conversationFromRun, incidentOutcomeFromRun, incidentDispositionFromRun, workflowSuggestions,
   paymentReceiptsFromRun, maskAccount, modeLabel, runCreatedLabel, stateLabel, taskBriefFromRun,
   type EmployeeActivity, type EmployeeConnectionStatus,
 } from './employeeView';
@@ -44,6 +44,7 @@ export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = fal
   const conversation = useMemo(() => conversationFromRun(run), [run]);
   const brief = useMemo(() => taskBriefFromRun(run), [run]);
   const incident = useMemo(() => incidentOutcomeFromRun(run), [run]);
+  const suggestions = useMemo(() => workflowSuggestions(run), [run]);
   const receipts = useMemo(() => paymentReceiptsFromRun(run), [run]);
   const disposition = incidentDispositionFromRun(run);
   const isOffline = connectionStatus !== 'connected';
@@ -88,7 +89,7 @@ export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = fal
     <div className={`employee-layout${rightPanel ? ' has-control-panel' : ''}`}>
       <section className="employee-chat-panel" aria-labelledby="employee-chat-title">
         <div className="employee-chat-header"><div className="employee-avatar" aria-hidden="true">M</div><div className="employee-chat-header__copy"><h1 id="employee-chat-title">Maya</h1><p>Procurement Agent</p><p className="employee-maya-description">I help review supplier invoices and prepare payments.</p></div><button className="employee-icon-button employee-work-settings" type="button" aria-label="Open work settings" onClick={() => setActiveSection('work')}><MoreHorizontal size={20}/></button></div>
-        {activeSection === 'chat' ? <AssistantConversation key={run?.runId || 'new'} messages={conversation} markers={markers} replay={replay} busy={busy || queued} offline={isOffline} running={running} onSend={onSend} feedback={feedback} empty={<div className="employee-empty-state"><MessageCircle size={28} aria-hidden="true"/><h2>What would you like to work on?</h2><p>{run ? 'Send Maya a message to continue this work.' : 'Send Maya a message or choose a suggestion below.'}</p>{replay && <p>Deterministic replay · no conversation was saved.</p>}</div>}/> : <div className="employee-chat-body employee-history">
+        {activeSection === 'chat' ? <AssistantConversation key={run?.runId || 'new'} messages={conversation} markers={markers} replay={replay} busy={busy || queued} offline={isOffline} running={running} suggestions={suggestions} onSend={onSend} feedback={feedback} empty={<div className="employee-empty-state"><MessageCircle size={28} aria-hidden="true"/><h2>What would you like to work on?</h2><p>{run ? 'Send Maya a message to continue this work.' : 'Send Maya a message or choose a suggestion below.'}</p>{replay && <p>Deterministic replay · no conversation was saved.</p>}</div>}/> : <div className="employee-chat-body employee-history">
           <div className="employee-subheading"><h2>{activeSection === 'work' ? 'Saved work' : 'Recorded activity'}</h2><button className="employee-icon-button" type="button" aria-label="Refresh saved runs" onClick={() => void perform(onRefresh, 'Saved work could not be refreshed.')}><RefreshCw size={18}/></button></div>
           {activeSection === 'work' ? <><label className="employee-run-select-label" htmlFor="employee-saved-run">Open a saved run</label><select id="employee-saved-run" value={run?.runId || ''} onChange={event => selectRun(event.target.value)}><option value="">Select saved work</option>{savedRuns.map(item => <option key={item.runId} value={item.runId}>{modeLabel(item.mode)} · {runCreatedLabel(item)}</option>)}</select><ul className="employee-run-list">{savedRuns.map(item => <li key={item.runId}><button type="button" onClick={() => selectRun(item.runId)} aria-current={item.runId === run?.runId ? 'true' : undefined}><strong>{modeLabel(item.mode)}</strong><span>{runCreatedLabel(item)} · {stateLabel(item.state)}</span></button></li>)}</ul><details className="employee-run-settings"><summary>Run settings</summary><div className="employee-start-controls"><label htmlFor="employee-run-mode">Run mode</label><select id="employee-run-mode" value={modeToStart} onChange={event => setModeToStart(event.target.value as EmployeeRunMode)}><option value="live">Live agent</option><option value="replay">Deterministic replay</option></select><button type="button" className="employee-primary-button" disabled={busy || startPending || isOffline} onClick={() => void startRun()}>{startPending ? 'Starting…' : 'Start work session'}</button></div>{run && onReset && <button className="employee-reset-button" type="button" onClick={onReset}>Reset this run</button>}</details></> : <ol className="employee-timeline">{feedItems.map(item => <ReactNodeRow key={item.id}>{item.content}</ReactNodeRow>)}</ol>}
           {feedback}

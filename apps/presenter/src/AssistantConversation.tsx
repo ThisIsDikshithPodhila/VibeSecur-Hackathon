@@ -3,8 +3,8 @@ import {
   AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive,
   useExternalStoreRuntime, type AppendMessage, type ThreadMessageLike,
 } from '@assistant-ui/react';
-import { ArrowUp, Clock3, FileText, Search, ShieldCheck, Wifi } from 'lucide-react';
-import type { EmployeeConversationEntry } from './employeeView';
+import { ArrowUp, CreditCard, FileText, Receipt, Search, ShieldCheck, Wifi } from 'lucide-react';
+import type { EmployeeConversationEntry, WorkflowSuggestion, WorkflowSuggestionKind } from './employeeView';
 
 export type ConversationMarker = { id: string; sequence: number; content: ReactNode };
 type Props = {
@@ -16,20 +16,18 @@ type Props = {
   running: boolean;
   empty: ReactNode;
   feedback?: ReactNode;
+  suggestions: WorkflowSuggestion[];
   onSend: (text: string) => Promise<unknown>;
 };
-const suggestions = [
-  { text: 'Show invoice details', Icon: FileText },
-  { text: 'Check supplier status', Icon: Search },
-  { text: 'Explain the blocked change', Icon: ShieldCheck },
-  { text: 'Show pending approvals', Icon: Clock3 },
-];
+const suggestionIcons: Record<WorkflowSuggestionKind, typeof FileText> = {
+  pay: CreditCard, inspect: FileText, explain: ShieldCheck, receipt: Receipt, investigate: Search,
+};
 const messageDate = (value: number | string): Date | undefined => {
   const date = typeof value === 'number' ? new Date(value < 1e12 ? value * 1000 : value) : new Date(value);
   return Number.isFinite(date.getTime()) ? date : undefined;
 };
 
-export function AssistantConversation({ messages, markers, replay, busy, offline, running, empty, feedback, onSend }: Props) {
+export function AssistantConversation({ messages, markers, replay, busy, offline, running, empty, feedback, suggestions, onSend }: Props) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -88,10 +86,10 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
       </ThreadPrimitive.Viewport>
       <div className="employee-composer-area">
         <div className="employee-suggestions" aria-label="Message suggestions">
-          {suggestions.map(({ text, Icon }) => <ThreadPrimitive.Suggestion key={text} prompt={text} send={false} disabled={busy || sending}
+          {suggestions.map(({ text, kind }) => { const Icon = suggestionIcons[kind]; return <ThreadPrimitive.Suggestion key={text} prompt={text} send={false} disabled={busy || sending}
             onClick={() => { setSendError(null); requestAnimationFrame(() => input.current?.focus()); }}>
             <Icon size={17} aria-hidden="true"/>{text}
-          </ThreadPrimitive.Suggestion>)}
+          </ThreadPrimitive.Suggestion>; })}
         </div>
         <ComposerPrimitive.Root className="employee-composer" aria-busy={sending}>
           <label className="visually-hidden" htmlFor="employee-message">Message Maya</label>

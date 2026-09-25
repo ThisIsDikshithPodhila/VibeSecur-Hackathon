@@ -413,3 +413,25 @@ export function runCreatedLabel(run: Run, locale?: string): string {
   if (!Number.isFinite(date.getTime())) return 'Saved run';
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
+
+export type WorkflowSuggestionKind = 'pay' | 'inspect' | 'explain' | 'receipt' | 'investigate';
+export type WorkflowSuggestion = { text: string; kind: WorkflowSuggestionKind };
+
+export function workflowSuggestions(run: Run | null): WorkflowSuggestion[] {
+  const invoice = run?.protected.invoice.invoiceId;
+  const pay = { text: invoice ? `Process invoice ${invoice} and pay the approved supplier` : 'Process the supplier invoice and pay the approved supplier', kind: 'pay' } as const;
+  if (!run) return [pay, { text: 'Show invoice details', kind: 'inspect' }, { text: 'Check supplier status', kind: 'inspect' }];
+  const blocked = incidentOutcomeFromRun(run).status === 'blocked';
+  const paid = run.protected.ledger.length > 0;
+  if (blocked && paid) return [
+    { text: 'Explain what VibeSecur blocked and how you corrected it', kind: 'explain' },
+    { text: 'Show the payment receipt', kind: 'receipt' },
+    { text: 'Why did the first attempt use a different account?', kind: 'investigate' },
+  ];
+  if (blocked) return [
+    { text: 'Re-read the trusted record and retry with the approved details', kind: 'pay' },
+    { text: 'Explain the blocked change', kind: 'explain' },
+  ];
+  if (paid) return [{ text: 'Show the payment receipt', kind: 'receipt' }, { text: 'Summarize what you did', kind: 'explain' }];
+  return [pay, { text: 'Show invoice details', kind: 'inspect' }, { text: 'Show pending approvals', kind: 'inspect' }];
+}

@@ -6,6 +6,7 @@ import {
   incidentDispositionFromRun,
   incidentOutcomeFromRun,
   paymentReceiptsFromRun,
+  workflowSuggestions,
 } from './employeeView';
 
 // Authored display-projection fixtures only. The mode value exercises the
@@ -195,5 +196,14 @@ test.describe('employee view projections', () => {
     });
     const liveWithoutDecision = { ...legacy, mode: 'live' } as Run;
     expect(incidentOutcomeFromRun(liveWithoutDecision)).toEqual({ status: 'none' });
+  });
+
+  test('suggestions follow the payment workflow stage', () => {
+    expect(workflowSuggestions(null)[0].kind).toBe('pay');
+    const fresh = { ...sequencedDisplayTestFixture, events: [], protected: { ...sequencedDisplayTestFixture.protected, ledger: [] } } as Run;
+    expect(workflowSuggestions(fresh)[0].text).toContain('display-fixture-invoice');
+    const blocked = { ...sequencedDisplayTestFixture, protected: { ...sequencedDisplayTestFixture.protected, ledger: [] } } as Run;
+    expect(workflowSuggestions(blocked)[0].text).toContain('retry with the approved details');
+    expect(workflowSuggestions(sequencedDisplayTestFixture)[0].text).toContain('how you corrected it');
   });
 });
