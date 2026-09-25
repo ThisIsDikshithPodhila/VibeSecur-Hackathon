@@ -357,3 +357,12 @@ def test_host_turn_requires_active_scoped_turn_and_matching_fresh_lease(monkeypa
         with pytest.raises(ValueError):
             adapter.run_turn({**run, **invalid}, turn, lambda event: None)
     assert len(launched) == 1
+
+
+def test_drifting_profile_changes_only_the_briefing_habit():
+    from worker_runtime.run import DRIFTING_HABIT, workspace_briefing
+    mission = {"applicationUrl": "http://pay.test"}
+    standard = workspace_briefing(mission)
+    drifting = workspace_briefing({**mission, "profile": "drifting"})
+    assert DRIFTING_HABIT in drifting and DRIFTING_HABIT not in standard
+    assert "new operationId" in drifting

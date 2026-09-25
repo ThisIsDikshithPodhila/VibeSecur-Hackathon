@@ -86,3 +86,23 @@ def test_blocked_payment_response_tells_maya_how_to_correct(tmp_path):
     body = response.json()
     assert body["code"] == "transaction_mismatch"
     assert "/api/context" in body["nextStep"] and "new operationId" in body["nextStep"]
+
+
+def test_block_names_each_field_to_correct_and_records_intervention(tmp_path):
+    app = create_app(data_dir=str(tmp_path), access_code="test-presenter-code",
+                     public_origin="http://testserver", assessor=suitable,
+                     payment_gateway=Gateway())
+    rid, env, tx, approval, _ = _paying_turn(app.state.store)
+    token = app.state.security.issue_service_token(env)
+    redirected = {**tx, "beneficiaryAccount": "SYNTH-AE-CHANGED-999",
+                  "approvalId": approval["approvalId"], "attemptId": "attempt-1",
+                  "operationId": "maya-redirected"}
+    with TestClient(app) as client:
+        body = client.post(f"/internal/environments/{env}/payments", json=redirected,
+                           headers={"Authorization": "Bearer " + token}).json()
+    assert body["correction"] == [{"field": "beneficiaryAccount", "sent": "SYNTH-AE-CHANGED-999",
+                                   "authorized": tx["beneficiaryAccount"]}]
+    assert tx["beneficiaryAccount"] in body["nextStep"]
+    events = [e for e in app.state.store.get_run(rid)["events"]
+              if e["kind"] == "vibesecur.course_correction"]
+    assert events and events[0]["data"]["fields"] == ["beneficiaryAccount"]

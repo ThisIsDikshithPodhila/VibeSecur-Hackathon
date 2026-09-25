@@ -93,7 +93,21 @@ def supervised_payment(store, gateway, assessor, environment_id, command):
     if proposal != snapshot:
         # Attribute exact-transaction rejection to its deterministic check,
         # even if Laya is unavailable or agrees with the proposed action.
-        return store.commit(environment_id, command)
+        try:
+            return store.commit(environment_id, command)
+        except StoreError as error:
+            if error.code == 'transaction_mismatch' and snapshot:
+                error.correction = [{'field': key, 'sent': proposal.get(key),
+                                     'authorized': snapshot.get(key)}
+                                    for key in TRANSACTION_KEYS
+                                    if proposal.get(key) != snapshot.get(key)]
+                store.append_event(run['runId'], 'vibesecur.course_correction', {
+                    'turnId': turn['turnId'], 'operationId': command['operationId'],
+                    'blockedTool': 'payments.create', 'reason': error.code,
+                    'fields': [item['field'] for item in error.correction],
+                    'assessmentLabel': assessment.get('label'),
+                    'assessmentStatus': assessment.get('status')})
+            raise
     code = None
     if assessment.get('status') != 'available' or assessment.get('truncationDetected'):
         code = ('assessment_input_too_large' if assessment.get('status') == 'input_too_large'

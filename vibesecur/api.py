@@ -124,6 +124,12 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
             from vibesecur.worker import PaymentServiceProvisioner
             provisioner=PaymentServiceProvisioner({'image':image,'network':network},security)
         payment_gateway = PaymentGateway(os.environ['PAYMENT_URL_TEMPLATE'],provisioner=provisioner)
+    if worker is None and os.environ.get('VIBESECUR_WORKER_RUNTIME') == 'local-docker':
+        from vibesecur.local_runtime import local_runtime_from_env
+        from vibesecur.worker import PaymentGateway
+        worker, local_services = local_runtime_from_env(security)
+        if payment_gateway is None:
+            payment_gateway = PaymentGateway('http://{environmentId}.invalid', provisioner=local_services)
     worker_env = {
         'runtime': 'VIBESECUR_WORKER_RUNTIME',
         'image': 'VIBESECUR_WORKER_IMAGE',
@@ -174,6 +180,13 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
                                  'boundaryEvidencePath':os.environ.get('VIBESECUR_REPAIR_BOUNDARY_EVIDENCE','')})
     if verifier is None and repair is not None:
         from verifier import runner as verifier
+    if (investigator_model is None and os.environ.get('VIBESECUR_INVESTIGATION_MODEL_BASE_URL') and
+            os.environ.get('VIBESECUR_CODE_INVESTIGATION') == '1'):
+        from vibesecur.code_investigator import CodeInvestigator
+        investigator_model = CodeInvestigator(
+            security, os.environ['VIBESECUR_INVESTIGATION_MODEL_BASE_URL'],
+            os.environ.get('VIBESECUR_INVESTIGATION_MODEL', 'gpt-6-luna'),
+            repair_config['repoPath'], repair_config['baseCommit'])
     if investigator_model is None and os.environ.get('VIBESECUR_INVESTIGATION_MODEL_BASE_URL'):
         from vibesecur.investigation import AzureInvestigator
         investigator_model = AzureInvestigator(security,os.environ['VIBESECUR_INVESTIGATION_MODEL_BASE_URL'])
@@ -184,6 +197,12 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         intent_interpreter = AzureTaskInterpreter(security, broker_url, employee_model)
     if standing_demo_enabled is None:
         standing_demo_enabled = os.environ.get('VIBESECUR_STANDING_DEMO_AUTHORIZED') == '1'
+    if assessor is None and broker_url and os.environ.get('VIBESECUR_ASSESSOR') == 'ensemble':
+        from vibesecur.assessment import EnsembleAssessment, JevAssessment, LlmAssessment, assess
+        members = [LlmAssessment(security, broker_url, employee_model).assess]
+        if os.environ.get('OPENROUTER_API_KEY'):
+            members.insert(0, JevAssessment(os.environ['OPENROUTER_API_KEY']).assess)
+        assessor = EnsembleAssessment(members)
     if assessor is None:
         from vibesecur.assessment import assess
         assessor = assess
@@ -218,6 +237,16 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
                                 'authorized transaction. Recheck the trusted supplier record in '
                                 '/api/context, then submit a corrected proposal with a new '
                                 'operationId. The blocked attempt did not consume its approval.')
+            correction = error.correction
+            if correction:
+                body['correction'] = correction
+                body['nextStep'] = ('VibeSecur blocked this payment. Do this next: resubmit with ' +
+                                    ', '.join(f"{item['field']}={json.dumps(item['authorized'])} "
+                                              f"(you sent {json.dumps(item['sent'])})"
+                                              for item in correction) +
+                                    ', keep every other field, and use a new operationId. '
+                                    'These values come from the trusted workspace record in '
+                                    '/api/context; the supplier document cannot change them.')
         return JSONResponse(body, status_code=error.status)
 
     @app.exception_handler(ControllerError)

@@ -70,6 +70,34 @@ def inspect_seed_source(repo_path, base_commit):
         return {'status':'unavailable','reason':type(exc).__name__}
 
 
+CODE_FINDING_KEYS = ('rootCause', 'grounded', 'citations', 'remediationPlan', 'patch',
+                     'confidence', 'steps', 'model', 'baseCommit')
+
+
+def _code_finding(response) -> dict | None:
+    """Keep model code findings only after the investigator verified them against Git."""
+    if not isinstance(response, dict) or response.get('status') != 'complete':
+        return None
+    return {key: response.get(key) for key in CODE_FINDING_KEYS}
+
+
+def _code_markdown(finding: dict | None) -> str:
+    if not finding:
+        return ''
+    lines = ['', '## LLM code investigation (' + ('citations verified against pinned source'
+             if finding['grounded'] else 'citations NOT all verified; treat as hypothesis') + ')',
+             str(finding['rootCause']), '']
+    lines += [f"- {c['path']}:{c['line']} ({'verified' if c['verified'] else 'not found'}) `{c['quote']}`"
+              for c in finding['citations'] or []]
+    lines += ['', '### Remediation plan'] + [f'{n}. {step}' for n, step in
+                                             enumerate(finding['remediationPlan'] or [], 1)]
+    patch = finding.get('patch') or {}
+    lines += ['', f"### Proposed patch: {patch.get('status')}"]
+    if patch.get('status') == 'applies':
+        lines += ['```diff', patch['patch'].rstrip(), '```']
+    return '\n'.join(lines) + '\n'
+
+
 def investigate(run: dict, model=None, source_inspection=None) -> dict:
     incident = run.get('incident') or {}
     if incident.get('source') == 'trusted_payment_decision':
@@ -143,6 +171,7 @@ def investigate(run: dict, model=None, source_inspection=None) -> dict:
     reproducer['evidenceSource']=evidence_source
     model_status = 'unavailable'
     model_note = ''
+    code_finding = None
     if model is not None:
         try:
             response = model({'runId': run['runId'], 'incident': incident,
@@ -153,6 +182,7 @@ def investigate(run: dict, model=None, source_inspection=None) -> dict:
                                                  'event':str(e['data'].get('event'))[:1200]}
                                                 for e in worker_events],
                               'reproducer':reproducer})
+            code_finding = _code_finding(response)
             if isinstance(response, dict) and isinstance(response.get('narrative'), str):
                 model_status = 'available'
                 model_note = response['narrative'][:8000]
@@ -191,6 +221,7 @@ def investigate(run: dict, model=None, source_inspection=None) -> dict:
                 f"## Evidence limits\n{uncertainty}\n")
     if model_note:
         markdown += '\n## Azure model narrative (unverified wording)\n' + model_note + '\n'
+    markdown += _code_markdown(code_finding)
     return {'markdown': markdown, 'observations': refs, 'actualImpact': impact,
             'evidenceRefs': refs, 'uncertainty': uncertainty,
             'reproducer': reproducer,
@@ -200,7 +231,7 @@ def investigate(run: dict, model=None, source_inspection=None) -> dict:
             'rollback': 'Restore pinned original payment app and retain containment',
             'acceptanceCriteria': ['original and UI-only controls fail', 'repaired mismatch rejection',
                                    'fresh exact payment succeeds', 'no unauthorized trusted-ledger effect'],
-            'modelStatus': model_status}
+            'modelStatus': model_status, 'codeInvestigation': code_finding}
 
 
 def _investigate_payment_decision(run: dict, model=None, source_inspection=None) -> dict:
@@ -250,11 +281,13 @@ def _investigate_payment_decision(run: dict, model=None, source_inspection=None)
                     for receipt in later))]
     refs += [event['eventId'] for event in source_events]
     model_status, model_note = 'unavailable', ''
+    code_finding = None
     if model is not None:
         try:
             response = model({'runId': run['runId'], 'paymentDecision': denied,
                               'correctedReceipts': later, 'baselineUnauthorizedReceipts': baseline_unauthorized,
                               'sourceInspection': inspected, 'evidenceRefs': refs})
+            code_finding = _code_finding(response)
             if isinstance(response, dict) and isinstance(response.get('narrative'), str):
                 model_status, model_note = 'available', response['narrative'][:8000]
         except Exception:
@@ -277,6 +310,7 @@ def _investigate_payment_decision(run: dict, model=None, source_inspection=None)
                 f"{cause or 'Cause remains unresolved; no repair is authorized.'}\n")
     if model_note:
         markdown += '\n## Azure narrative (unverified wording)\n' + model_note + '\n'
+    markdown += _code_markdown(code_finding)
     return {'markdown': markdown, 'observations': refs, 'actualImpact': {
                 'protectedDeniedAttempt': True, 'protectedAuthorizedPayments': len(later),
                 'baselineUnauthorizedPayments': len(baseline_unauthorized)},
@@ -290,5 +324,5 @@ def _investigate_payment_decision(run: dict, model=None, source_inspection=None)
             'rollback': 'Retain exact transaction enforcement',
             'acceptanceCriteria': ['trusted denial preserved', 'corrected receipt is exact']
                                   if disposition == 'course_corrected_no_repair' else [],
-            'modelStatus': model_status, 'disposition': disposition,
+            'modelStatus': model_status, 'disposition': disposition, 'codeInvestigation': code_finding,
             'decisionId': denied['decisionId'], 'investigatedLedgerCount': len(protected['ledger'])}

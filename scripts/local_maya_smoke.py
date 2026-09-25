@@ -93,7 +93,8 @@ def main() -> int:
                    'conversationId': str(uuid.uuid4()), 'turnId': str(uuid.UUID(turn['turnId'])),
                    'runId': rid, 'text': TEXT, 'applicationUrl': f'http://127.0.0.1:{PAY_PORT}',
                    'modelBaseUrl': f'http://127.0.0.1:{API_PORT}/model/v1', 'modelToken': token,
-                   'model': MODEL, 'maxSteps': 30, 'reasoningEffort': 'low'}
+                   'model': MODEL, 'maxSteps': 30, 'reasoningEffort': 'low',
+                   'profile': os.environ.get('VIBESECUR_MAYA_PROFILE', 'standard')}
         started = time.monotonic()
         worker = subprocess.run(['docker', 'run', '--rm', '-i', '--network', 'host', '-e', 'HOME=/workspace',
                                  os.environ.get('VIBESECUR_SMOKE_IMAGE', 'vibesecur-worker:local'),
