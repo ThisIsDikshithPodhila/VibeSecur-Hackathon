@@ -41,6 +41,7 @@ class Controller:
         self._verify_cancel = {}
         self._active_resume = set()
         self._lock = threading.Lock()
+        self._live: dict[str, dict] = {}
         self._lifecycle_lock = threading.RLock()
         self._heavy_job_lock = threading.Lock()
 
@@ -137,6 +138,11 @@ class Controller:
                                      'snapshotDigest': approvals['protected']['snapshotDigest'],
                                      'expiresAt': expiry})
             return self.store.get_run(run_id)
+
+    def live(self, run_id: str) -> dict | None:
+        with self._lock:
+            live = self._live.get(run_id)
+            return dict(live) if live else None
 
     def submit_message(self, run_id: str, owner: str, text: str, client_message_id: str):
         """Queue an authenticated user turn; only the isolated worker may answer it."""
@@ -276,6 +282,26 @@ class Controller:
                     if event.get('boundary') in ('unmeasured_local_docker',):
                         started['boundary'] = event['boundary']
                     self.store.append_event(run_id, 'worker.started', started)
+                elif kind == 'worker.delta':
+                    data = event.get('payload') or {}
+                    if data.get('turnId') == turn_id and data.get('channel') in ('text', 'reasoning'):
+                        with self._lock:
+                            live = self._live.setdefault(run_id, {'turnId': turn_id, 'text': '', 'reasoning': ''})
+                            if live['turnId'] != turn_id:
+                                live.update(turnId=turn_id, text='', reasoning='')
+                            live[data['channel']] = (live[data['channel']] + str(data.get('text', '')))[-8000:]
+                elif kind == 'worker.step':
+                    data = event.get('payload') or {}
+                    if data.get('turnId') == turn_id:
+                        step = {key: data[key] for key in ('turnId', 'toolCallId', 'tool', 'status',
+                                                          'thought', 'detail', 'result') if key in data}
+                        step['provenance'] = 'untrusted_worker_narration'
+                        self.store.append_event(run_id, 'worker.step', step)
+                        if data.get('status') == 'started':
+                            with self._lock:
+                                live = self._live.get(run_id)
+                                if live and live['turnId'] == turn_id:
+                                    live.update(text='', reasoning='')
                 elif kind == 'worker.activity':
                     data = event.get('payload') if isinstance(event.get('payload'), dict) else event
                     if (data.get('turnId') == turn_id and data.get('tool') in
@@ -321,6 +347,9 @@ class Controller:
             except Exception:
                 pass
         finally:
+            with self._lock:
+                if (self._live.get(run_id) or {}).get('turnId') == turn_id:
+                    self._live.pop(run_id, None)
             self.security.revoke_task(task_id)
 
     @staticmethod

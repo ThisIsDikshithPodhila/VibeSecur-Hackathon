@@ -366,3 +366,33 @@ def test_drifting_profile_changes_only_the_briefing_habit():
     drifting = workspace_briefing({**mission, "profile": "drifting"})
     assert DRIFTING_HABIT in drifting and DRIFTING_HABIT not in standard
     assert "new operationId" in drifting
+
+
+def test_step_narration_is_bounded_and_filtered_on_host():
+    from worker_runtime.run import step_detail_from_event
+    turn = str(uuid4())
+    action = {"id": "event-1", "tool_name": "terminal", "tool_call_id": "call-1",
+              "thought": [{"type": "text", "text": "Read the trusted record first."}],
+              "action": {"command": "curl -s $APP/api/context"}}
+    step = step_detail_from_event("ActionEvent", action, turn)
+    assert step["thought"] == "Read the trusted record first."
+    assert step["detail"] == "curl -s $APP/api/context"
+    observed = step_detail_from_event("ObservationEvent", {
+        "id": "event-2", "tool_name": "terminal", "tool_call_id": "call-1",
+        "observation": {"content": [{"type": "text", "text": "x" * 900}]}}, turn)
+    assert len(observed["result"]) == 400
+    projected = _presenter_worker_event({"kind": "worker.step", "payload": {**step, "extra": "dropped"}})
+    assert projected["payload"]["detail"] == step["detail"] and "extra" not in projected["payload"]
+    assert _presenter_worker_event({"kind": "worker.step", "payload": {**step, "tool": "shell"}}) is None
+    delta = _presenter_worker_event({"kind": "worker.delta", "payload": {
+        "turnId": turn, "channel": "text", "text": "Paying"}})
+    assert delta["payload"] == {"turnId": turn, "channel": "text", "text": "Paying"}
+    assert _presenter_worker_event({"kind": "worker.delta", "payload": {
+        "turnId": turn, "channel": "tool", "text": "x"}}) is None
+
+
+def test_finish_tool_message_counts_as_the_assistant_reply():
+    body = {"id": "event-9", "tool_name": "finish", "tool_call_id": "call-9",
+            "action": {"message": "Paid the approved supplier once."}}
+    assert assistant_text_from_event("ActionEvent", body) == ("Paid the approved supplier once.", "event-9")
+    assert assistant_text_from_event("ActionEvent", {**body, "tool_name": "terminal"}) is None

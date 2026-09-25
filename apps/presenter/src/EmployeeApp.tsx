@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, LockKeyhole, RotateCcw } from 'lucide-react';
-import { ApiError, approvePayment, command, createIssue, createRun, getCapabilities, getConnectors, getRun, listRuns, login, logout, saveRemediationPlan, sendMessage, session, type Capabilities, type ConnectorStates } from './api';
+import { ApiError, approvePayment, command, createIssue, createRun, getCapabilities, getConnectors, getRun, listRuns, login, logout, saveRemediationPlan, sendMessage, session, streamRun, type Capabilities, type ConnectorStates } from './api';
 import { ControlPanel, type IssueDraft, type IssueProvider } from './ControlPanel';
 import { EmployeeWorkspace } from './EmployeeWorkspace';
 import { snapshot, type Environment, type Run } from './types';
@@ -121,6 +121,12 @@ function EmployeeApp() {
     const timer = window.setInterval(() => { void refresh(); }, active ? 1000 : 3000);
     return () => window.clearInterval(timer);
   }, [authenticated, busy, refresh, run?.state, run?.conversation?.activeTurnId]);
+
+  const streaming = authenticated && run?.mode === 'live' && (Boolean(run?.conversation?.activeTurnId) || busy !== null) ? run.runId : null;
+  useEffect(() => {
+    if (!streaming) return;
+    return streamRun(streaming, next => { if (next.runId === runId.current && !busyRef.current) showRun(next); });
+  }, [streaming, showRun]);
 
   async function perform<T>(label: string, action: () => Promise<T>, after?: (result: T) => void): Promise<T> {
     if (busyRef.current) throw new Error('Another request is still in progress.');

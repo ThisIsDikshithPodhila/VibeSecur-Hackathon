@@ -72,8 +72,48 @@ def turn_activity_from_event(event_type: str, body: dict, turn_id: str) -> dict 
             "sdkEventId": event_id if isinstance(event_id, str) and len(event_id) <= 128 else None}
 
 
+def _parts_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(item.get("text", "") for item in value
+                         if isinstance(item, dict) and isinstance(item.get("text"), str))
+    return ""
+
+
+def step_detail_from_event(event_type: str, body: dict, turn_id: str) -> dict | None:
+    """Display-only narration of one tool step: the model's stated thought, the
+    action it chose, and a short observation excerpt. Untrusted worker text."""
+    activity = turn_activity_from_event(event_type, body, turn_id)
+    if activity is None:
+        return None
+    step = {"turnId": turn_id, "toolCallId": activity["toolCallId"], "tool": activity["tool"],
+            "status": activity["status"]}
+    if event_type == "ActionEvent":
+        thought = (_parts_text(body.get("thought")) or
+                   (body.get("reasoning_content") if isinstance(body.get("reasoning_content"), str) else ""))
+        action = body.get("action") if isinstance(body.get("action"), dict) else {}
+        detail = " ".join(str(action[key]) for key in ("command", "url", "path", "text", "index")
+                          if isinstance(action.get(key), (str, int)) and str(action[key]).strip())
+        if not detail and isinstance(body.get("summary"), str):
+            detail = body["summary"]
+        step["thought"], step["detail"] = thought.strip()[:1200], detail.strip()[:300]
+    else:
+        observation = body.get("observation") if isinstance(body.get("observation"), dict) else {}
+        step["result"] = _parts_text(observation.get("content")).strip()[:400]
+    return step
+
+
 def assistant_text_from_event(event_type: str, body: dict) -> tuple[str, str] | None:
-    """Take only assistant TextContent; exclude reasoning and tool-call payloads."""
+    """Take only assistant TextContent or the finish tool's message; exclude
+    reasoning and other tool-call payloads."""
+    if event_type == "ActionEvent" and body.get("tool_name") == "finish":
+        action = body.get("action") if isinstance(body.get("action"), dict) else {}
+        text, event_id = action.get("message"), body.get("id")
+        if (isinstance(text, str) and text.strip() and len(text.strip()) <= 8192
+                and isinstance(event_id, str) and event_id):
+            return text.strip(), event_id
+        return None
     if event_type != "MessageEvent" or body.get("source") != "agent":
         return None
     message = body.get("llm_message")
@@ -210,9 +250,10 @@ def run_turn_mission(mission: dict) -> int:
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.terminal import TerminalTool
 
+    streaming = mission.get("stream") is True
     llm = LLM(usage_id="vibesecur-employee", model=mission["model"],
               base_url=mission["modelBaseUrl"], api_key=SecretStr(mission["modelToken"]),
-              reasoning_effort=reasoning_effort(mission))
+              reasoning_effort=reasoning_effort(mission), stream=streaming)
     agent = Agent(llm=llm, tools=[Tool(name=BrowserToolSet.name),
                                   Tool(name=TerminalTool.name),
                                   Tool(name=FileEditorTool.name)],
@@ -234,11 +275,37 @@ def run_turn_mission(mission: dict) -> int:
         activity = turn_activity_from_event(kind, body, turn_id)
         if activity is not None:
             emit("worker.activity", activity)
+            step = step_detail_from_event(kind, body, turn_id)
+            if step is not None:
+                emit("worker.step", step)
         message = assistant_text_from_event(kind, body)
         if message is not None:
             assistant.append(message)
             emit("worker.assistant", {"turnId": turn_id, "text": message[0],
                                       "sdkEventId": message[1]})
+
+    pending = {"text": "", "reasoning": ""}
+    flushed = [time.monotonic()]
+
+    def flush():
+        for channel in ("reasoning", "text"):
+            if pending[channel]:
+                emit("worker.delta", {"turnId": turn_id, "channel": channel,
+                                      "text": pending[channel][:2000]})
+                pending[channel] = ""
+        flushed[0] = time.monotonic()
+
+    def on_token(chunk):
+        try:
+            delta = chunk.choices[0].delta
+        except (AttributeError, IndexError, TypeError):
+            return
+        for channel, value in (("text", getattr(delta, "content", None)),
+                               ("reasoning", getattr(delta, "reasoning_content", None))):
+            if isinstance(value, str):
+                pending[channel] += value
+        if time.monotonic() - flushed[0] >= 0.15 or sum(map(len, pending.values())) >= 400:
+            flush()
 
     # The SDK's ConversationState.create reads base_state.json and EventLog at
     # this exact UUID path. It verifies the same tools, then replaces the old
@@ -248,7 +315,8 @@ def run_turn_mission(mission: dict) -> int:
                                 conversation_id=UUID(mission["conversationId"]),
                                 callbacks=[observe],
                                 max_iteration_per_run=min(int(mission["maxSteps"]), 50),
-                                delete_on_close=False, visualizer=None)
+                                delete_on_close=False, visualizer=None,
+                                token_callbacks=[on_token] if streaming else None)
     emit("worker.turn_started", {"runId": mission.get("runId"), "turnId": turn_id,
                                  "conversationId": mission["conversationId"]})
     try:
@@ -260,6 +328,7 @@ def run_turn_mission(mission: dict) -> int:
                              + mission["continuationContext"] + "]")
         conversation.send_message(user_message)
         conversation.run()
+        flush()
     except Exception as exc:
         emit("worker.sdk_error", {"turnId": turn_id, "errorType": type(exc).__name__})
         return 1

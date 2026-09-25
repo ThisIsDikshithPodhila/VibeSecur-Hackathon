@@ -118,6 +118,7 @@ class LocalDockerWorker:
                    "model": self.config["model"],
                    "reasoningEffort": self.config.get("reasoningEffort", "low"),
                    "profile": self.config.get("profile", "standard"),
+                   "stream": self.config.get("stream", True) is True,
                    "maxSteps": min(int(self.config.get("maxSteps", 40)), 50)}
         timeout = min(int(self.config.get("timeoutSeconds", 600)), 900)
         command = ["docker", "run", "--rm", "-i", "--name", job_id, "--network", "host",
@@ -190,6 +191,7 @@ def local_runtime_from_env(security) -> tuple[LocalDockerWorker, LocalPaymentSer
         "artifactDir": os.environ.get("VIBESECUR_LOCAL_ARTIFACT_DIR", str(ROOT / "artifacts" / "local-worker")),
         "reasoningEffort": os.environ.get("VIBESECUR_WORKER_REASONING", "low"),
         "profile": os.environ.get("VIBESECUR_MAYA_PROFILE", "standard"),
+        "stream": os.environ.get("VIBESECUR_WORKER_STREAM", "1") == "1",
         "leaseFactory": lambda task_id: security.issue_model_lease(
             task_id, model, ttl=900, max_requests=40, max_output_tokens=4096)}, services)
     return worker, services

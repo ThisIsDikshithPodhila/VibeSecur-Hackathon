@@ -20,6 +20,17 @@ export type EmployeeConversationEntry = {
   timeLabel: string;
   text: string;
   sourceKind: 'conversation.user' | 'conversation.maya';
+  steps?: EmployeeStep[];
+  reasoning?: string;
+  streaming?: boolean;
+};
+export type EmployeeStep = {
+  toolCallId: string;
+  tool: string;
+  status: 'started' | 'succeeded' | 'failed';
+  thought?: string;
+  detail?: string;
+  result?: string;
 };
 export type EmployeeIncidentOutcome =
   | { status: 'none' | 'unavailable' }
@@ -248,15 +259,38 @@ function conversationText(event: Event): string | null {
   return text ? candidate : null;
 }
 
+function stepsByTurn(run: Run): Map<string, EmployeeStep[]> {
+  const turns = new Map<string, EmployeeStep[]>();
+  for (const event of [...run.events].filter(item => item.kind === 'worker.step').sort((a, b) => a.sequence - b.sequence)) {
+    const data = event.data;
+    const turnId = nonEmptyString(data.turnId);
+    const toolCallId = nonEmptyString(data.toolCallId);
+    const status = data.status;
+    if (!turnId || !toolCallId || (status !== 'started' && status !== 'succeeded' && status !== 'failed')) continue;
+    const steps = turns.get(turnId) ?? [];
+    let step = steps.find(item => item.toolCallId === toolCallId);
+    if (!step) { step = { toolCallId, tool: nonEmptyString(data.tool) || 'tool', status }; steps.push(step); }
+    step.status = status;
+    for (const key of ['thought', 'detail', 'result'] as const) {
+      const value = nonEmptyString(data[key]);
+      if (value) step[key] = value;
+    }
+    turns.set(turnId, steps);
+  }
+  return turns;
+}
+
 export function conversationFromRun(run: Run | null, locale?: string): EmployeeConversationEntry[] {
   if (!run) return [];
-  return run.events
+  const steps = stepsByTurn(run);
+  const entries: EmployeeConversationEntry[] = run.events
     .filter((event) => event.kind === 'conversation.user' || event.kind === 'conversation.maya')
     .sort((left, right) => left.sequence - right.sequence)
     .flatMap((event) => {
       const text = conversationText(event);
       if (!text) return [];
       const sourceKind = event.kind as EmployeeConversationEntry['sourceKind'];
+      const turnSteps = sourceKind === 'conversation.maya' ? steps.get(nonEmptyString(event.data.turnId) || '') : undefined;
       return [{
         id: event.eventId || `${event.sequence}-${event.kind}`,
         sequence: event.sequence,
@@ -265,8 +299,29 @@ export function conversationFromRun(run: Run | null, locale?: string): EmployeeC
         timeLabel: eventTime(event.timestamp, locale),
         text,
         sourceKind,
+        ...(turnSteps?.length ? { steps: turnSteps } : {}),
       }];
     });
+  const active = run.conversation?.activeTurnId;
+  const answered = run.events.some(event => event.kind === 'conversation.maya' && event.data.turnId === active);
+  const asked = active ? run.events.find(event => event.kind === 'conversation.user' && event.data.turnId === active) : undefined;
+  if (active && asked && !answered) {
+    const live = run.live && run.live.turnId === active ? run.live : null;
+    entries.push({
+      id: `live-${active}`,
+      sequence: asked.sequence + 0.5,
+      role: 'maya',
+      timestamp: asked.timestamp,
+      timeLabel: 'Working…',
+      text: live?.text ?? '',
+      reasoning: live?.reasoning || undefined,
+      sourceKind: 'conversation.maya',
+      steps: steps.get(active) ?? [],
+      streaming: true,
+    });
+    entries.sort((left, right) => left.sequence - right.sequence);
+  }
+  return entries;
 }
 
 export function incidentOutcomeFromRun(run: Run | null): EmployeeIncidentOutcome {

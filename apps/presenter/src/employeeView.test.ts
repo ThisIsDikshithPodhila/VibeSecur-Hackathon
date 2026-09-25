@@ -207,3 +207,27 @@ test.describe('employee view projections', () => {
     expect(workflowSuggestions(sequencedDisplayTestFixture)[0].text).toContain('how you corrected it');
   });
 });
+
+test('an active turn streams steps and live text without a durable reply', () => {
+  const turnId = '11111111-1111-4111-8111-111111111111';
+  const base = sequencedDisplayTestFixture;
+  const run = {
+    ...base,
+    conversation: { conversationId: 'c', status: 'active', activeTurnId: turnId, turns: [] },
+    live: { turnId, text: 'Checking the trusted', reasoning: '' },
+    events: [
+      { sequence: 900, kind: 'conversation.user', eventId: 'u', timestamp: 1, data: { text: 'Pay it', turnId } },
+      { sequence: 901, kind: 'worker.step', eventId: 's1', timestamp: 2, data: { turnId, toolCallId: 'c1', tool: 'terminal', status: 'started', thought: 'Read context', detail: 'curl context' } },
+      { sequence: 902, kind: 'worker.step', eventId: 's2', timestamp: 3, data: { turnId, toolCallId: 'c1', tool: 'terminal', status: 'succeeded', result: 'ok' } },
+    ],
+  } as unknown as Run;
+  const entries = conversationFromRun(run);
+  const live = entries[entries.length - 1];
+  expect(live.streaming).toBe(true);
+  expect(live.text).toBe('Checking the trusted');
+  expect(live.steps).toEqual([{ toolCallId: 'c1', tool: 'terminal', status: 'succeeded', thought: 'Read context', detail: 'curl context', result: 'ok' }]);
+  const answered = { ...run, events: [...run.events, { sequence: 903, kind: 'conversation.maya', eventId: 'm', timestamp: 4, data: { text: 'Paid.', turnId } }] } as unknown as Run;
+  const final = conversationFromRun(answered);
+  expect(final.filter(entry => entry.role === 'maya' && entry.streaming)).toHaveLength(0);
+  expect(final[final.length - 1].steps?.[0].status).toBe('succeeded');
+});

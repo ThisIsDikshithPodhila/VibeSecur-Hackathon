@@ -12,7 +12,7 @@ import zipfile
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
@@ -352,7 +352,28 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
     async def get_run(run_id: str, request: Request):
         row = presenter(request)
         controller.reconcile(row['owner'])
-        return store.get_run(run_id, row['owner'])
+        return {**store.get_run(run_id, row['owner']), 'live': controller.live(run_id)}
+
+    @app.get('/api/runs/{run_id}/stream')
+    async def stream_run(run_id: str, request: Request):
+        row = presenter(request)
+        store.get_run(run_id, row['owner'])
+
+        async def frames():
+            last, sent = None, 0
+            while sent < 2400 and not await request.is_disconnected():
+                run = await asyncio.to_thread(store.get_run, run_id, row['owner'])
+                body = json.dumps({**run, 'live': controller.live(run_id)}, default=str,
+                                  separators=(',', ':'))
+                if body != last:
+                    last = body
+                    yield 'data: ' + body + '\n\n'
+                elif sent % 40 == 0:
+                    yield ': keepalive\n\n'
+                sent += 1
+                await asyncio.sleep(0.25)
+        return StreamingResponse(frames(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.post('/api/runs/{run_id}/approve-payment')
     async def post_approval(run_id: str, request: Request):
