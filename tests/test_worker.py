@@ -191,14 +191,19 @@ def test_promotion_build_failure_has_fixed_stage_without_docker_error_text(monke
 def test_openshell_gate_blocks_when_owned_public_target_is_unavailable(monkeypatch):
     from scripts import gate_boundary
 
-    monkeypatch.setattr(gate_boundary, "_check_host", lambda url: {"reachable": False})
+    monkeypatch.setattr(gate_boundary, "_owned_public_exact_host_check", lambda: {"reachable": False})
+    monkeypatch.setattr(gate_boundary, "expected_policy", lambda *a: ({}, {}))
     monkeypatch.setattr(gate_boundary.subprocess, "run",
                         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sandbox probe ran")))
     result = gate_boundary.gate_openshell({
         "runtime": "openshell", "image": "sha256:" + "a" * 64,
         "network": "openshell-docker", "paymentHost": "payment-env-baseline",
         "otherPaymentHost": "payment-env-protected", "sandbox": "vs-gate",
-        "policyTemplatePath": "/unused"})
+        "policyTemplatePath": "/unused", "paymentIp": "172.30.0.3", "paymentContainerId": "c" * 64,
+        "paymentImageDigest": "sha256:" + "d" * 64, "paymentEnvironmentId": "env-synthetic",
+        "sourceRunId": "run-" + "e" * 32, "otherPaymentIp": "172.30.0.4",
+        "otherPaymentContainerId": "f" * 64, "otherPaymentImageDigest": "sha256:" + "d" * 64,
+        "otherPaymentEnvironmentId": "env-other",})
     assert result["status"] == "blocked"
     assert result["reason"] == "owned_public_target_unavailable"
 
@@ -527,12 +532,12 @@ def test_openshell_worker_requires_measured_policy_and_coverage(tmp_path, monkey
 
     digest = "sha256:" + "c" * 64
     policy = tmp_path / "openshell-worker.yaml.template"
-    policy.write_text("host: __PAYMENT_HOST__\n")
+    policy.write_text("host: __PAYMENT_IP__\nallowed_ips: [__PAYMENT_IP__/32]\n")
     (tmp_path / "openshell-worker.policy-binding.json").write_text(json.dumps({
         "sourceTemplateSha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
-        "policy": {"host": "__PAYMENT_HOST__"},
+        "policy": {"host": "__PAYMENT_IP__", "allowed_ips": ["__PAYMENT_IP__/32"]},
     }))
-    _, binding = expected_policy(policy, "payment-env-baseline")
+    _, binding = expected_policy(policy, "172.30.0.3")
     evidence = tmp_path / "boundary.json"
     required = ("applicationReachable", "modelRelayReachable", "controllerDenied",
                 "verifierDenied", "hostGatewayDenied", "otherPaymentDenied",
@@ -551,12 +556,23 @@ def test_openshell_worker_requires_measured_policy_and_coverage(tmp_path, monkey
                               "ipv4Routes": [{"destination": "172.30.0.0/24"}],
                               "ipv6Routes": [], "noDefaultRoute": True,
                               "onlyExpectedInternalRoutes": True, "providerRouteDenied": True}}
+    payload.update(profile="owned-demo-openshell-proxy-v1", paymentIp="172.30.0.3",
+                   otherPaymentIp="172.30.0.4", sourceRunId="run-" + "1" * 32,
+                   paymentEnvironmentId="env-baseline", otherPaymentEnvironmentId="env-protected",
+                   paymentContainerId="2" * 64, otherPaymentContainerId="3" * 64,
+                   paymentImageDigest=digest, otherPaymentImageDigest=digest,
+                   firewallProof={"passed": True, "chain": "DOCKER-INTERNAL",
+                     "bridgeInterface": "br-" + "d" * 12,
+                     "rule": ["!", "-d", "172.30.0.0/24", "-i", "br-" + "d" * 12, "-j", "DROP"],
+                     "input": {"counterDelta": 1}})
+    payload['routeProof'].update(expectedSubnet="10.200.0.0/24", nestedDefaultViaSupervisor=True)
+    payload['coverage'].update(providerRouteDenied=None, nestedProxyRouteAttested=True, hostForwardingDenied=True)
     evidence.write_text(json.dumps(payload))
     config = {"runtime": "openshell", "networkVerified": True,
               "network": "vibesecur-worker-internal",
               "image": digest, "imageRef": "vibesecur-worker:1.49.5",
               "artifactDir": str(tmp_path), "applicationUrl": "http://payment-{environmentId}:8000",
-              "modelBaseUrl": "http://host.openshell.internal:8000/model/v1",
+              "modelBaseUrl": "http://172.30.0.1:8000/model/v1", "paymentEndpoint": lambda *a: {},
               "model": "openai/gpt-6-sol", "boundaryEvidencePath": str(evidence),
               "policyTemplatePath": str(policy), "openshellCli": "/home/demo/.local/bin/openshell",
               "leaseFactory": lambda task_id: "task-lease"}
@@ -578,7 +594,7 @@ def test_openshell_worker_requires_measured_policy_and_coverage(tmp_path, monkey
     policy.write_text("changed policy\n")
     with pytest.raises(ValueError, match="policy differs"):
         WorkerAdapter(config)
-    policy.write_text("host: __PAYMENT_HOST__\n")
+    policy.write_text("host: __PAYMENT_IP__\nallowed_ips: [__PAYMENT_IP__/32]\n")
     payload["coverage"]["controllerDenied"] = False
     evidence.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="boundary coverage"):

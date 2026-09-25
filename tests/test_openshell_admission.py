@@ -108,9 +108,9 @@ def test_network_setup_creates_only_internal_exact_bridge(monkeypatch, capsys):
 
 def test_checked_in_policy_binding_matches_pinned_synthetic_template():
     template = Path(__file__).resolve().parents[1] / "deploy/policies/openshell-worker.yaml.template"
-    expected, identity = expected_policy(template, "payment-env-synthetic")
-    assert identity["policyTemplateSha256"] == "8dbc5d40c5a66388721353319595a70b2ef909f9a9a55de5b7344a0851e7f1ac"
-    assert expected["network_policies"]["invoice_application"]["endpoints"][0]["host"] == "payment-env-synthetic"
+    expected, identity = expected_policy(template, "172.30.0.3")
+    assert identity["policyTemplateSha256"] == "a62a1fdf15da79f8df2764403baa0d7ca61c66229641aad9c8adb9f11a89b342"
+    assert expected["network_policies"]["invoice_application"]["endpoints"][0]["host"] == "172.30.0.3"
     observed = {"status": "effective", "sandbox": "owned-gate", "hash": "b" * 64,
                 "policy": expected}
     assert effective_policy(json.dumps(observed), expected, "owned-gate") == "b" * 64
@@ -131,8 +131,8 @@ def test_policy_binding_fails_if_yaml_and_companion_drift(tmp_path):
     companion.write_text(json.dumps({"sourceTemplateSha256": "0" * 64,
                                      "policy": {"host": "__PAYMENT_HOST__"}}))
     with pytest.raises(ValueError, match="differs from approved binding"):
-        expected_policy(template, "payment-env-synthetic")
-    with pytest.raises(ValueError, match="Invalid payment host"):
+        expected_policy(template, "172.30.0.3")
+    with pytest.raises(ValueError, match="Invalid payment IP"):
         expected_policy(template, "example.com")
 
 
@@ -176,6 +176,7 @@ def test_openshell_gate_stops_before_sandbox_probe_when_verifier_route_is_absent
     from types import SimpleNamespace
     from scripts import gate_boundary as gate
 
+    monkeypatch.setattr(gate, "_owned_public_exact_host_check", lambda: {"reachable": True, "httpStatus": 200})
     monkeypatch.setattr(gate, "_check_host", lambda _url: {"reachable": True, "httpStatus": 200})
     monkeypatch.setattr(gate, "_check_host_verifier",
                         lambda _url: {"reachable": True, "httpStatus": 404,
@@ -202,6 +203,11 @@ def test_openshell_gate_stops_before_sandbox_probe_when_verifier_route_is_absent
     template = Path(__file__).resolve().parents[1] / "deploy/policies/openshell-worker.yaml.template"
     result = gate.gate_openshell({"runtime": "openshell", "image": "sha256:" + "b" * 64,
                                   "network": NAME, "paymentHost": "payment-env-synthetic",
+                                  "paymentIp": "172.30.0.3", "paymentContainerId": "c" * 64,
+        "paymentImageDigest": "sha256:" + "d" * 64, "paymentEnvironmentId": "env-synthetic",
+        "sourceRunId": "run-" + "e" * 32, "otherPaymentIp": "172.30.0.4",
+        "otherPaymentContainerId": "f" * 64, "otherPaymentImageDigest": "sha256:" + "d" * 64,
+        "otherPaymentEnvironmentId": "env-other",
                                   "otherPaymentHost": "payment-env-other", "sandbox": "vs-gate",
                                   "policyTemplatePath": str(template), "cli": "openshell"})
     assert result["passed"] is False

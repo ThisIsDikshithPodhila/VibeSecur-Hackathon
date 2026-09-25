@@ -268,7 +268,7 @@ class PaymentGateway:
         """Read the untrusted invoice document from the same real service."""
         try:
             url = self._url(run, environment).removesuffix("/api/payments") + "/documents/invoice"
-            response = httpx.get(url, timeout=min(self.timeout, 2.0), trust_env=False)
+            response = httpx.get(url, timeout=self.timeout, trust_env=False)
         except (httpx.RequestError, RuntimeError, ValueError, KeyError, TypeError,
                 OSError, subprocess.SubprocessError) as exc:
             return {"status": "transport_error", "httpStatus": None,
@@ -325,6 +325,7 @@ class PaymentGateway:
             raise RuntimeError("Separate payment service profile attestation is unavailable")
         return self.provisioner.profile_attestation(run)
 
+
     def worker_endpoint(self, run: dict, environment: str) -> dict:
         if self.provisioner is None:
             raise RuntimeError("Separate payment service worker endpoint is unavailable")
@@ -354,9 +355,9 @@ class PaymentServiceProvisioner:
                           config.get("acceptedProofPath")]
         if any(profile_values) and not all(profile_values):
             raise ValueError("Accepted payment profile configuration is incomplete")
-        self.accepted_profile_path = Path(profile_values[0]).absolute() if all(profile_values) else None
+        self.accepted_profile_path = Path(profile_values[0]).resolve() if all(profile_values) else None
         self.accepted_profile_sha256 = profile_values[1] if all(profile_values) else None
-        self.accepted_proof_path = Path(profile_values[2]).absolute() if all(profile_values) else None
+        self.accepted_proof_path = Path(profile_values[2]).resolve() if all(profile_values) else None
         if self.accepted_profile_sha256 is not None and not re.fullmatch(
                 r"[0-9a-f]{64}", self.accepted_profile_sha256):
             raise ValueError("Accepted payment profile digest is invalid")
@@ -425,52 +426,29 @@ class PaymentServiceProvisioner:
                 or selector["recordSha256"] != self.accepted_profile_sha256
                 or self.accepted_profile_path is None or self.accepted_proof_path is None):
             raise ValueError("Accepted payment profile selector mismatch")
-        if (self.accepted_profile_path.is_symlink() or self.accepted_proof_path.is_symlink()
-                or not self.accepted_profile_path.is_file() or not self.accepted_proof_path.is_file()):
+        if self.accepted_profile_path.is_symlink() or self.accepted_proof_path.is_symlink():
             raise ValueError("Accepted payment profile path is not regular")
         record_bytes = self.accepted_profile_path.read_bytes()
-        if len(record_bytes) > 16384:
-            raise ValueError("Accepted payment profile record too large")
         if hashlib.sha256(record_bytes).hexdigest() != self.accepted_profile_sha256:
             raise ValueError("Accepted payment profile record changed")
         record = json.loads(record_bytes)
-        if (not isinstance(record, dict) or json.dumps(
-                record, sort_keys=True, separators=(",", ":"),
-                ensure_ascii=False).encode("utf-8") != record_bytes):
-            raise ValueError("Accepted payment profile record is not canonical")
-        expected_keys = {"id", "version", "acceptedRunId", "baseCommit", "baseImageDigest",
-                         "proofSha256", "contractDigest", "artifactDigest",
-                         "acceptanceManifestDigest", "sourceSha256", "imageDigest",
-                         "deploymentProbe", "deployedEventHash"}
         digests = ("proofSha256", "contractDigest", "artifactDigest",
-                   "acceptanceManifestDigest", "sourceSha256", "deployedEventHash")
-        deployment_probe = record.get("deploymentProbe") or {}
-        if (set(record) != expected_keys or record.get("id") != "verified-healthy-v1"
+                   "acceptanceManifestDigest", "sourceSha256")
+        if (not isinstance(record, dict) or record.get("id") != "verified-healthy-v1"
                 or record.get("version") != 1
                 or record.get("baseImageDigest") != _image_digest(self.image)
                 or not _IMAGE_ID.fullmatch(str(record.get("imageDigest", "")))
                 or not re.fullmatch(r"[0-9a-f]{40}", str(record.get("baseCommit", "")))
                 or not _RUN_ID.fullmatch(str(record.get("acceptedRunId", "")))
                 or any(not re.fullmatch(r"[0-9a-f]{64}", str(record.get(key, "")))
-                       for key in digests)
-                or not isinstance(deployment_probe, dict)
-                or set(deployment_probe) != {"artifactDigest", "imageDigest", "sourceSha256",
-                                             "paymentRouteReady", "separateService"}
-                or any(deployment_probe.get(key) != record[key] for key in
-                       ("artifactDigest", "imageDigest", "sourceSha256"))
-                or deployment_probe.get("paymentRouteReady") is not True
-                or deployment_probe.get("separateService") is not True):
+                       for key in digests)):
             raise ValueError("Accepted payment profile record invalid")
         proof_bytes = self.accepted_proof_path.read_bytes()
-        if len(proof_bytes) > 1048576:
-            raise ValueError("Accepted payment profile proof too large")
         if hashlib.sha256(proof_bytes).hexdigest() != record["proofSha256"]:
             raise ValueError("Accepted payment profile proof changed")
         proof = json.loads(proof_bytes)
         if (not isinstance(proof, dict) or proof.get("passed") is not True
-                or proof.get("state") != "passed"
-                or proof.get("outerContainment") is not True
-                or proof.get("compensatingRule") is not False
+                or proof.get("state") != "passed" or proof.get("outerContainment") is not True
                 or proof.get("outerControls", {}).get("passed") is not True
                 or proof.get("sourceReview", {}).get("passed") is not True
                 or proof["sourceReview"].get("sourceSha256") != record["sourceSha256"]
@@ -598,57 +576,6 @@ class PaymentServiceProvisioner:
         self.ensure(run)
         return self._origins[run[environment]["environmentId"]]
 
-    def worker_endpoint(self, run: dict, environment: str) -> dict:
-        """Expose one exact scoped service on the pinned internal bridge.
-
-        The host operator attests the per-run container and its assigned address
-        before the worker renders a /32 OpenShell policy. Trial arms are
-        attached only when their own sandbox needs them.
-        """
-        if environment not in ("baseline", "protected"):
-            raise ValueError("Unknown payment environment")
-        with self._lock:
-            self.ensure(run)
-            network = json.loads(self._docker("network", "inspect", WORKER_NETWORK_NAME))[0]
-            validate_worker_network(network)
-            network_id = network["Id"]
-            environment_id = run[environment]["environmentId"]
-            name = "payment-" + environment_id
-            info = json.loads(self._docker("inspect", "--type", "container", name))[0]
-            labels = info.get("Config", {}).get("Labels") or {}
-            networks = info.get("NetworkSettings", {}).get("Networks") or {}
-            expected_image, _ = self._expected_image(run, environment_id)
-            if (info.get("Name") != "/" + name or info.get("Image") != expected_image
-                    or labels.get("vibesecur.run-id") != run["runId"]
-                    or labels.get("vibesecur.environment-id") != environment_id
-                    or info.get("State", {}).get("Running") is not True
-                    or self.network not in networks
-                    or set(networks) - {self.network, WORKER_NETWORK_NAME}):
-                raise RuntimeError("Protected payment service identity changed")
-            if WORKER_NETWORK_NAME not in networks:
-                self._docker("network", "connect", "--alias", name,
-                             WORKER_NETWORK_NAME, name)
-                info = json.loads(self._docker("inspect", "--type", "container", name))[0]
-                networks = info.get("NetworkSettings", {}).get("Networks") or {}
-            attachment = networks.get(WORKER_NETWORK_NAME) or {}
-            address = attachment.get("IPAddress")
-            if (set(networks) != {self.network, WORKER_NETWORK_NAME}
-                    or attachment.get("NetworkID") != network_id
-                    or not isinstance(address, str)):
-                raise RuntimeError("Protected payment worker attachment changed")
-            try:
-                ip = ipaddress.ip_address(address)
-            except ValueError as exc:
-                raise RuntimeError("Protected payment worker address invalid") from exc
-            if (ip.version != 4 or ip not in ipaddress.ip_network(WORKER_BRIDGE_SUBNET)
-                    or ip in (ipaddress.ip_address(WORKER_BRIDGE_GATEWAY),
-                              ipaddress.ip_address("172.30.0.2"))):
-                raise RuntimeError("Protected payment worker address is not scoped")
-            return {"runId": run["runId"], "environmentId": environment_id,
-                    "containerId": info["Id"], "imageDigest": info["Image"],
-                    "networkId": network_id, "ip": address,
-                    "url": f"http://{address}:8000"}
-
     def _write_manifest(self, record: dict) -> None:
         self.promotion_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = self._manifest_path(record["runId"])
@@ -671,95 +598,10 @@ class PaymentServiceProvisioner:
             raise RuntimeError("Payment image source hash probe failed")
         return actual
 
-    def profile_attestation(self, run: dict) -> dict:
-        """Attest both live payment arms against one pinned accepted patch proof."""
-        if not _RUN_ID.fullmatch(str(run.get("runId", ""))):
-            raise ValueError("Invalid payment profile run ID")
-        with self._lock:
-            record = self._accepted_profile(run)
-            if self._manifest(run) is not None:
-                raise ValueError("Verified healthy profile cannot mix with run promotion")
-            self.ensure(run)
-            base = json.loads(self._docker("image", "inspect", record["baseImageDigest"]))[0]
-            image = json.loads(self._docker("image", "inspect", record["imageDigest"]))[0]
-            base_layers = base.get("RootFS", {}).get("Layers") or []
-            image_layers = image.get("RootFS", {}).get("Layers") or []
-            image_labels = image.get("Config", {}).get("Labels") or {}
-            if (base.get("Id") != record["baseImageDigest"]
-                    or image.get("Id") != record["imageDigest"]
-                    or not base_layers or image_layers[:len(base_layers)] != base_layers
-                    or any(image_labels.get(key) != record[field] for key, field in (
-                        ("vibesecur.artifact-digest", "artifactDigest"),
-                        ("vibesecur.source-sha256", "sourceSha256"),
-                        ("vibesecur.base-commit", "baseCommit")))
-                    or self._source_sha_in_image(record["imageDigest"], running=False)
-                    != record["sourceSha256"]):
-                raise RuntimeError("Verified payment profile image or source identity mismatch")
-            environments = {}
-            seen_containers = set()
-            for arm in ("baseline", "protected"):
-                environment_id = run[arm]["environmentId"]
-                if not isinstance(environment_id, str) or not _ENV_ID.fullmatch(environment_id):
-                    raise ValueError("Invalid payment profile environment")
-                name = "payment-" + environment_id
-                info = json.loads(self._docker("inspect", "--type", "container", name))[0]
-                labels = info.get("Config", {}).get("Labels") or {}
-                networks = info.get("NetworkSettings", {}).get("Networks") or {}
-                container_id = info.get("Id")
-                if (info.get("Name") != "/" + name or info.get("Image") != record["imageDigest"]
-                        or info.get("State", {}).get("Running") is not True
-                        or not isinstance(container_id, str)
-                        or not re.fullmatch(r"[0-9a-f]{64}", container_id)
-                        or container_id in seen_containers or set(networks) != {self.network}
-                        or any(labels.get(key) != value for key, value in (
-                            ("vibesecur.run-id", run["runId"]),
-                            ("vibesecur.environment-id", environment_id),
-                            ("vibesecur.profile-id", record["id"]),
-                            ("vibesecur.profile-record-sha256", record["recordSha256"]),
-                            ("vibesecur.proof-sha256", record["proofSha256"]),
-                            ("vibesecur.artifact-digest", record["artifactDigest"]),
-                            ("vibesecur.source-sha256", record["sourceSha256"]),
-                            ("vibesecur.base-commit", record["baseCommit"])))
-                        or any((mount.get("Destination") or "").startswith(
-                            "/opt/vibesecur/payment_app") for mount in info.get("Mounts") or [])
-                        or self._source_sha_in_image(name, running=True) != record["sourceSha256"]):
-                    raise RuntimeError("Verified payment profile container or source identity mismatch")
-                seen_containers.add(container_id)
-                address = networks[self.network].get("IPAddress")
-                try:
-                    ip = ipaddress.ip_address(address)
-                except (TypeError, ValueError):
-                    raise RuntimeError("Verified payment profile address unavailable") from None
-                if not ip.is_private:
-                    raise RuntimeError("Verified payment profile address is not private")
-                response = httpx.get(f"http://{ip}:8000/api/context", timeout=3.0, trust_env=False)
-                if (response.status_code != 200 or
-                        response.json().get("environment", {}).get("environmentId") != environment_id):
-                    raise RuntimeError("Verified payment profile service binding failed")
-                environments[arm] = {"environmentId": environment_id,
-                                     "imageDigest": record["imageDigest"],
-                                     "sourceSha256": record["sourceSha256"],
-                                     "containerId": container_id}
-            if environments["baseline"]["environmentId"] == environments["protected"]["environmentId"]:
-                raise RuntimeError("Verified payment profile arms are not separate")
-            return {"status": "verified_healthy", "profileId": record["id"],
-                    "profileVersion": record["version"], "recordSha256": record["recordSha256"],
-                    "runId": run["runId"], "environments": environments,
-                    "verificationProofSha256": record["proofSha256"],
-                    "contractDigest": record["contractDigest"],
-                    "artifactDigest": record["artifactDigest"],
-                    "acceptanceManifestDigest": record["acceptanceManifestDigest"],
-                    "deploymentProbe": record["deploymentProbe"],
-                    "deployedEventHash": record["deployedEventHash"],
-                    "attestedAt": time.time()}
-
     def promote_verified(self, run: dict, patch_path: str, artifact_digest: str,
                          base_commit: str) -> dict:
         """Build and replace only this run's protected service from exact pinned input."""
         from vibesecur.repair import prepare_candidate, validate_patch
-
-        if run.get("paymentProfile") is not None:
-            raise ValueError("Verified healthy profile does not permit run promotion")
 
         run_id = run["runId"]
         self._manifest_path(run_id)
@@ -965,6 +807,58 @@ class PaymentServiceProvisioner:
                 self._docker("rm", "-f", name)
                 self._origins.pop(environment_id, None)
             self._manifest_path(run_id).unlink(missing_ok=True)
+
+
+    def worker_endpoint(self, run: dict, environment: str) -> dict:
+        """Expose one exact scoped service on the pinned internal bridge.
+
+        The host operator attests the per-run container and its assigned address
+        before the worker renders a /32 OpenShell policy. Trial arms are
+        attached only when their own sandbox needs them.
+        """
+        if environment not in ("baseline", "protected"):
+            raise ValueError("Unknown payment environment")
+        with self._lock:
+            self.ensure(run)
+            network = json.loads(self._docker("network", "inspect", WORKER_NETWORK_NAME))[0]
+            validate_worker_network(network)
+            network_id = network["Id"]
+            environment_id = run[environment]["environmentId"]
+            name = "payment-" + environment_id
+            info = json.loads(self._docker("inspect", "--type", "container", name))[0]
+            labels = info.get("Config", {}).get("Labels") or {}
+            networks = info.get("NetworkSettings", {}).get("Networks") or {}
+            expected_image, _ = self._expected_image(run, environment_id)
+            if (info.get("Name") != "/" + name or info.get("Image") != expected_image
+                    or labels.get("vibesecur.run-id") != run["runId"]
+                    or labels.get("vibesecur.environment-id") != environment_id
+                    or info.get("State", {}).get("Running") is not True
+                    or self.network not in networks
+                    or set(networks) - {self.network, WORKER_NETWORK_NAME}):
+                raise RuntimeError("Protected payment service identity changed")
+            if WORKER_NETWORK_NAME not in networks:
+                self._docker("network", "connect", "--alias", name,
+                             WORKER_NETWORK_NAME, name)
+                info = json.loads(self._docker("inspect", "--type", "container", name))[0]
+                networks = info.get("NetworkSettings", {}).get("Networks") or {}
+            attachment = networks.get(WORKER_NETWORK_NAME) or {}
+            address = attachment.get("IPAddress")
+            if (set(networks) != {self.network, WORKER_NETWORK_NAME}
+                    or attachment.get("NetworkID") != network_id
+                    or not isinstance(address, str)):
+                raise RuntimeError("Protected payment worker attachment changed")
+            try:
+                ip = ipaddress.ip_address(address)
+            except ValueError as exc:
+                raise RuntimeError("Protected payment worker address invalid") from exc
+            if (ip.version != 4 or ip not in ipaddress.ip_network(WORKER_BRIDGE_SUBNET)
+                    or ip in (ipaddress.ip_address(WORKER_BRIDGE_GATEWAY),
+                              ipaddress.ip_address("172.30.0.2"))):
+                raise RuntimeError("Protected payment worker address is not scoped")
+            return {"runId": run["runId"], "environmentId": environment_id,
+                    "containerId": info["Id"], "imageDigest": info["Image"],
+                    "networkId": network_id, "ip": address,
+                    "url": f"http://{address}:8000"}
 
 
 class WorkerAdapter:

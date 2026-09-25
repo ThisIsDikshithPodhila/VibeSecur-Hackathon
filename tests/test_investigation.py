@@ -117,3 +117,24 @@ def test_distinct_exact_receipt_needs_healthy_source_for_no_repair_disposition()
                                'transaction':{**approved,'beneficiaryAccount':'SYNTH-CHANGED-002'}}]
     vulnerable=investigate(run,source_inspection=healthy['sourceInspection'])
     assert vulnerable['disposition']=='recovery_required'
+
+
+@pytest.mark.parametrize('returned,confirmed', [
+    ('call("POST", "/payments", command)', True),
+    ('await asyncio.to_thread(call, "POST", "/payments", command)', True),
+    ('await asyncio.to_thread(call, "GET", "/payments", command)', False),
+    ('untrusted("POST", "/payments", command)', False),
+])
+def test_source_inspection_checks_direct_and_async_effect_calls(monkeypatch, returned, confirmed):
+    from types import SimpleNamespace
+    from vibesecur.investigation import inspect_seed_source
+    source = '''async def payment():
+    approved = any(item.get("approvalId") == command.get("approvalId") and
+                   item.get("snapshot", {}).get("invoiceId") == command.get("invoiceId")
+                   for item in environment.get("approvals", []))
+    return ''' + returned + '\n'
+    monkeypatch.setattr('vibesecur.investigation.subprocess.run',
+                        lambda *a, **k: SimpleNamespace(stdout=source))
+    result = inspect_seed_source('/synthetic/repo', 'a' * 40)
+    assert result['evidence']['forwardsCommandToEffectStore'] is confirmed
+    assert (result['status'] == 'confirmed_seed_defect') is confirmed

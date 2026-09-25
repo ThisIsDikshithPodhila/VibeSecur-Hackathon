@@ -269,6 +269,10 @@ def gate_openshell(config: dict) -> dict:
         return {"passed": False, "status": "blocked", "reason": "owned_public_target_unavailable",
                 "externalProbeUrl": OWNED_PUBLIC_HEALTH_URL,
                 "hostChecks": {"external": public_target_check}}
+    verifier_ready = _check_host_verifier('http://172.30.0.1:8000/internal/verifier/health')
+    if not _host_verifier_ready(verifier_ready):
+        return {'passed': False, 'status': 'blocked', 'reason': 'owned_verifier_route_unavailable',
+                'hostChecks': {'verifier': verifier_ready}}
     try:
         if socket.gethostbyname(OWNED_PUBLIC_HOST) != OWNED_PUBLIC_IP:
             raise ValueError("Owned demo DNS changed")

@@ -22,7 +22,7 @@ _ENV_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}\Z")
 _SANDBOX = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}\Z")
 
 
-def gate_config(run: dict, image: str, sandbox: str, template: Path) -> dict:
+def gate_config(run: dict, image: str, sandbox: str, template: Path, endpoints: dict | None = None) -> dict:
     if (not isinstance(run, dict) or not _RUN_ID.fullmatch(str(run.get("runId", "")))
             or not _IMAGE_ID.fullmatch(image)
             or not _SANDBOX.fullmatch(sandbox)):
@@ -38,8 +38,21 @@ def gate_config(run: dict, image: str, sandbox: str, template: Path) -> dict:
         raise ValueError("Synthetic payment environments are invalid")
     policy_path = template.resolve(strict=True)
     payment_host = "payment-" + protected
-    expected_policy(policy_path, payment_host)
-    return {"runtime": "openshell", "image": image,
+    if not isinstance(endpoints, dict) or set(endpoints) != {'protected', 'baseline'}:
+        raise ValueError("Measured per-run payment endpoints required")
+    measured = {}
+    for arm, prefix in [('protected', 'payment'), ('baseline', 'otherPayment')]:
+        endpoint = endpoints[arm]
+        if (endpoint.get('runId') != run['runId'] or endpoint.get('environmentId') != run[arm]['environmentId']
+                or not re.fullmatch(r'[0-9a-f]{64}', str(endpoint.get('containerId', '')))
+                or not _IMAGE_ID.fullmatch(str(endpoint.get('imageDigest', '')))):
+            raise ValueError("Measured endpoint identity mismatch")
+        expected_policy(policy_path, endpoint['ip'])
+        measured.update({prefix+'Ip': endpoint['ip'], prefix+'ContainerId': endpoint['containerId'],
+                         prefix+'ImageDigest': endpoint['imageDigest'], prefix+'EnvironmentId': endpoint['environmentId']})
+    if measured['paymentIp'] == measured['otherPaymentIp']:
+        raise ValueError("Payment endpoints must be separate")
+    return {**measured,"runtime": "openshell", "image": image,
             "network": WORKER_NETWORK_NAME, "sandbox": sandbox,
             "paymentHost": payment_host, "otherPaymentHost": "payment-" + baseline,
             "policyTemplatePath": str(policy_path), "sourceRunId": run["runId"]}
@@ -51,10 +64,12 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--sandbox", required=True)
     parser.add_argument("--policy-template", type=Path, required=True)
+    parser.add_argument("--endpoints-json", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     config = gate_config(json.loads(args.run_json.read_text(encoding="utf-8")),
-                         args.image, args.sandbox, args.policy_template)
+                         args.image, args.sandbox, args.policy_template,
+                         json.loads(args.endpoints_json.read_text()))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as target:
         json.dump(config, target, indent=2, sort_keys=True)

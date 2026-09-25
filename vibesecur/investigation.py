@@ -58,7 +58,23 @@ def inspect_seed_source(repo_path, base_commit):
                         and target.id=='approved' for target in node.targets)), '')
         narrow=("item.get('snapshot', {}).get('invoiceId') == command.get('invoiceId')" in condition
                 and "item.get('approvalId') == command.get('approvalId')" in condition)
-        forwards='return call("POST", "/payments", command)' in snippet
+        def forwards_payment(node):
+            if not isinstance(node, ast.Return):
+                return False
+            value = node.value.value if isinstance(node.value, ast.Await) else node.value
+            if not isinstance(value, ast.Call) or value.keywords:
+                return False
+            args = value.args
+            if (isinstance(value.func, ast.Attribute) and value.func.attr == 'to_thread'
+                    and isinstance(value.func.value, ast.Name) and value.func.value.id == 'asyncio'
+                    and args and isinstance(args[0], ast.Name) and args[0].id == 'call'):
+                args = args[1:]
+            elif not (isinstance(value.func, ast.Name) and value.func.id == 'call'):
+                return False
+            return (len(args) == 3 and isinstance(args[0], ast.Constant) and args[0].value == 'POST'
+                    and isinstance(args[1], ast.Constant) and args[1].value == '/payments'
+                    and isinstance(args[2], ast.Name) and args[2].id == 'command')
+        forwards = any(forwards_payment(node) for node in ast.walk(endpoint))
         result={'status':'confirmed_seed_defect' if narrow and forwards else 'unconfirmed',
                 'baseCommit':base_commit,'sourcePath':'payment_app/app.py',
                 'sourceSha256':hashlib.sha256(source.encode()).hexdigest(),

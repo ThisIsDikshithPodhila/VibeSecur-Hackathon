@@ -21,7 +21,7 @@ def test_live_worker_requires_full_measured_configuration(monkeypatch, tmp_path)
     with pytest.raises(ValueError,match='separate provisioned payment gateway'):
         create_app(data_dir=str(tmp_path),access_code='test-presenter-code',
                    public_origin='http://testserver')
-    gateway=object()
+    gateway=__import__('types').SimpleNamespace(worker_endpoint=lambda *args: {})
     with pytest.raises(ValueError,match='Incomplete live worker configuration'):
         create_app(data_dir=str(tmp_path),access_code='test-presenter-code',
                    public_origin='http://testserver',payment_gateway=gateway)

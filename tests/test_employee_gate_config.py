@@ -19,8 +19,15 @@ def synthetic_run():
 
 
 def test_gate_config_derives_current_owned_hosts_and_pinned_network():
-    config = gate_config(synthetic_run(), IMAGE, "vs-current-gate", TEMPLATE)
-    assert config == {
+    run = synthetic_run()
+    endpoints = {arm: {'runId': run['runId'], 'environmentId': run[arm]['environmentId'],
+                      'containerId': digit * 64, 'imageDigest': IMAGE, 'ip': ip}
+                 for arm, digit, ip in [('protected', 'c', '172.30.0.3'), ('baseline', 'd', '172.30.0.4')]}
+    config = gate_config(run, IMAGE, "vs-current-gate", TEMPLATE, endpoints)
+    assert config['paymentIp'] == '172.30.0.3'
+    assert config['otherPaymentIp'] == '172.30.0.4'
+    assert {key: config[key] for key in ('runtime','image','network','sandbox','paymentHost',
+                                        'otherPaymentHost','policyTemplatePath','sourceRunId')} == {
         "runtime": "openshell", "image": IMAGE, "network": NAME,
         "sandbox": "vs-current-gate", "paymentHost": "payment-env-protected",
         "otherPaymentHost": "payment-env-base",
