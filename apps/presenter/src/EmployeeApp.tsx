@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRight, LockKeyhole, RotateCcw } from 'lucide-react';
-import { ApiError, approvePayment, command, createIssue, createRun, getCapabilities, getConnectors, getRun, listRuns, login, logout, saveRemediationPlan, sendMessage, session, streamRun, type Capabilities, type ConnectorStates } from './api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { RotateCcw } from 'lucide-react';
+import { ApiError, approvePayment, command, createIssue, createRun, getCapabilities, getConnectors, getRun, listRuns, logout, saveRemediationPlan, sendMessage, session, streamRun, type Capabilities, type ConnectorStates } from './api';
 import { ControlPanel, type IssueDraft, type IssueProvider } from './ControlPanel';
 import { EmployeeWorkspace } from './EmployeeWorkspace';
 import { snapshot, type Environment, type Run } from './types';
@@ -25,7 +25,6 @@ function currentApproval(environment: Environment): boolean {
 
 function EmployeeApp() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [accessCode, setAccessCode] = useState('');
   const [runs, setRuns] = useState<Run[]>([]);
   const [run, setRun] = useState<Run | null>(null);
   const [controlOpen, setControlOpen] = useState(false);
@@ -114,6 +113,18 @@ function EmployeeApp() {
     void connect();
     return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [refresh]);
+
+  useEffect(() => {
+    if (authenticated !== false) return;
+    const timer = window.setInterval(() => {
+      void session().then(result => {
+        if (!result.authenticated) return;
+        setAuthenticated(true); setConnection('connected'); setRefreshError(null);
+        void refresh();
+      }).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, refresh]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -231,19 +242,6 @@ function EmployeeApp() {
       response => { showRun(response.run); setNotice(`${provider === 'linear' ? 'Linear issue' : 'Jira ticket'} ${response.issue.key} was created.`); });
   }
 
-  async function signIn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!accessCode.trim()) return;
-    try {
-      await perform('Signing in', () => login(accessCode), result => {
-        setAuthenticated(result.authenticated); setAccessCode(''); setConnection('connected');
-      });
-      await refresh();
-      try { setConnectors(await getConnectors()); } catch { setConnectors(disconnected); }
-      try { setCapabilities(await getCapabilities()); } catch { setCapabilities({ liveWorker: { configured: false }, executors: [] }); }
-    } catch { /* The visible error stays on the sign-in form. */ }
-  }
-
   async function signOut() {
     await perform('Signing out', logout, () => {
       setAuthenticated(false); setControlOpen(false); showRun(null); setRuns([]);
@@ -270,22 +268,10 @@ function EmployeeApp() {
     {refreshError && <small>{refreshError}</small>}
   </main>;
 
-  if (!authenticated) return <main className="employee-login">
-    <div className="employee-login-brand"><span className="employee-brand-mark" aria-hidden="true">V</span><strong>VibeSecur</strong></div>
-    <section className="employee-login-card" aria-labelledby="employee-login-heading">
-      <div className="employee-login-avatar" aria-hidden="true">M</div>
-      <p className="employee-login-eyebrow">Your AI colleague</p>
-      <h1 id="employee-login-heading">Work with Maya</h1>
-      <p>Keep supplier work moving, review payment decisions, and see what happened when a change needs attention.</p>
-      <form onSubmit={event => void signIn(event)}>
-        <label htmlFor="employee-access-code">Workspace access code</label>
-        <input id="employee-access-code" type="password" autoComplete="one-time-code" value={accessCode}
-          onChange={event => setAccessCode(event.target.value)} placeholder="Enter access code" autoFocus />
-        <button type="submit" disabled={!!busy || !accessCode.trim()}>{busy === 'Signing in' ? 'Opening…' : 'Open workspace'} <ArrowRight size={17}/></button>
-      </form>
-      {error && <p className="employee-login-error" role="alert">{error}</p>}
-      <p className="employee-login-footnote"><LockKeyhole size={14}/>Your run history is saved on the server.</p>
-    </section>
+  if (!authenticated) return <main className="employee-loading" role="status">
+    <span className="employee-brand-mark" aria-hidden="true">V</span>
+    <p>Connecting to your workspace…</p>
+    {(error || refreshError) && <small>{error || refreshError}</small>}
   </main>;
 
   return <>

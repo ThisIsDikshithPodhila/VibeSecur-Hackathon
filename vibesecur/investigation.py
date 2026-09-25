@@ -301,6 +301,9 @@ def _investigate_payment_decision(run: dict, model=None, source_inspection=None)
                  'submitted a distinct exact approved transaction on a confirmed healthy application.')
     else:
         cause = None
+    if (cause is None and isinstance(code_finding, dict) and code_finding.get('grounded') is True
+            and isinstance(code_finding.get('rootCause'), str) and code_finding['rootCause'].strip()):
+        cause = code_finding['rootCause'].strip()
     markdown = (f"# Synthetic payment decision {run['runId']}\n\n"
                 f"Trusted decision {denied['decisionId']} rejected operation "
                 f"{denied.get('operationId')} with reason {reason}.\n\n"

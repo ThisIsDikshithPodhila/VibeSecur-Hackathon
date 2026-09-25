@@ -191,3 +191,15 @@ def test_login_rate_limit_uses_forwarded_client_only_from_trusted_proxy(monkeypa
                            public_origin='http://testserver')
     with TestClient(untrusted) as client:
         assert [attempt(client, f'198.51.100.{i}', i) for i in range(6)] == [401] * 5 + [429]
+
+
+def test_open_access_issues_a_session_without_an_access_code(monkeypatch):
+    monkeypatch.setenv('VIBESECUR_OPEN_ACCESS', '1')
+    with tempfile.TemporaryDirectory() as directory:
+        app = create_app(data_dir=directory, access_code='test-presenter-code', public_origin=ORIGIN)
+        with TestClient(app) as client:
+            first = client.get('/api/session').json()
+            assert first['authenticated'] is True and first['csrfToken'] and first['openAccess'] is True
+            assert client.get('/api/session').json()['csrfToken'] == first['csrfToken']
+            headers = {'Origin': ORIGIN, 'X-CSRF-Token': first['csrfToken'], 'Idempotency-Key': 'open-key'}
+            assert client.post('/api/runs', json={'mode': 'replay'}, headers=headers).status_code == 200

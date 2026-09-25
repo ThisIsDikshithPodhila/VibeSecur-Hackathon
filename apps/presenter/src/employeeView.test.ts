@@ -3,6 +3,7 @@ import type { Event, Run, Transaction } from './types';
 import {
   activityFromRun,
   conversationFromRun,
+  stepLabel,
   incidentDispositionFromRun,
   incidentOutcomeFromRun,
   paymentReceiptsFromRun,
@@ -126,7 +127,7 @@ test.describe('employee view projections', () => {
     const conversation = conversationFromRun(sequencedDisplayTestFixture);
     expect(conversation.map((item) => [item.role, item.text, item.sequence])).toEqual([
       ['user', 'Summarize the invoice', 5],
-      ['maya', 'The approved payment receipt is recorded.', 8],
+      ['maya', 'The approved payment receipt is recorded.', 5.5],
     ]);
     expect(typeof conversation[0].timestamp).toBe('string');
     expect(conversation[0].timeLabel.length).toBeGreaterThan(0);
@@ -201,11 +202,19 @@ test.describe('employee view projections', () => {
   test('suggestions follow the payment workflow stage', () => {
     expect(workflowSuggestions(null)[0].kind).toBe('pay');
     const fresh = { ...sequencedDisplayTestFixture, events: [], protected: { ...sequencedDisplayTestFixture.protected, ledger: [] } } as Run;
-    expect(workflowSuggestions(fresh)[0].text).toContain('display-fixture-invoice');
+    expect(workflowSuggestions(fresh)[0].text).toContain('missing in my inventory');
+    expect(workflowSuggestions(fresh)[2].text).toContain('display-fixture-invoice');
     const blocked = { ...sequencedDisplayTestFixture, protected: { ...sequencedDisplayTestFixture.protected, ledger: [] } } as Run;
     expect(workflowSuggestions(blocked)[0].text).toContain('retry with the approved details');
     expect(workflowSuggestions(sequencedDisplayTestFixture)[0].text).toContain('how you corrected it');
   });
+});
+
+test('labels worker steps by the business action they perform', () => {
+  expect(stepLabel({ tool: 'terminal', detail: 'curl -s $APP/api/inventory', status: 'succeeded' }).label).toBe('Checking inventory levels');
+  expect(stepLabel({ tool: 'terminal', detail: 'curl -X POST $APP/api/purchase-orders', status: 'succeeded' }).label).toBe('Placing purchase order');
+  expect(stepLabel({ tool: 'terminal', detail: 'curl -X POST $APP/api/payments', result: '{"error":"transaction_mismatch"}', status: 'succeeded' }))
+    .toEqual({ label: 'Payment blocked by VibeSecur', blocked: true });
 });
 
 test('an active turn streams steps and live text without a durable reply', () => {

@@ -5,6 +5,7 @@ import hashlib
 import asyncio
 import io
 import json
+import secrets
 import os
 from pathlib import Path
 import sqlite3
@@ -297,13 +298,22 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
     async def health():
         return {'status': 'ok'}
 
+    open_access = os.environ.get('VIBESECUR_OPEN_ACCESS') == '1'
+
     @app.get('/api/session')
     async def get_session(request: Request):
         try:
             row = security.session(request.cookies.get('vibesecur_session', ''))
         except SecurityError:
-            return {'authenticated': False, 'csrfToken': None}
-        return {'authenticated': True, 'csrfToken': row['csrf']}
+            if not open_access:
+                return {'authenticated': False, 'csrfToken': None}
+            grant = secrets.token_urlsafe(16)
+            result = security.login(grant, grant)
+            response = JSONResponse({'authenticated': True, 'csrfToken': result['csrfToken'], 'openAccess': True})
+            response.set_cookie('vibesecur_session', result['token'], httponly=True, secure=cookie_secure,
+                                samesite='strict', path='/', max_age=86400)
+            return response
+        return {'authenticated': True, 'csrfToken': row['csrf'], **({'openAccess': True} if open_access else {})}
 
     @app.post('/api/session')
     async def post_session(request: Request):

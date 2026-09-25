@@ -6,7 +6,8 @@ import {
 } from '@assistant-ui/react';
 import { ArrowUp, Brain, Check, CreditCard, FileText, Globe, Loader2, Receipt, Search, ShieldCheck, SquareTerminal, Wifi, X } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { EmployeeConversationEntry, WorkflowSuggestion, WorkflowSuggestionKind } from './employeeView';
+import { stepLabel, type EmployeeConversationEntry, type WorkflowSuggestion, type WorkflowSuggestionKind } from './employeeView';
+import { IncidentDocument } from './IncidentDocument';
 
 export type ConversationMarker = { id: string; sequence: number; content: ReactNode };
 type Props = {
@@ -30,21 +31,27 @@ const toolLabels: Record<string, { label: string; Icon: typeof FileText }> = {
   file_editor: { label: 'File editor', Icon: FileText },
 };
 const TextPart: TextMessagePartComponent = ({ text, status }) => text || status.type === 'running'
-  ? <p className="employee-message__text">{text}{status.type === 'running' && <span className="employee-caret" aria-hidden="true"/>}</p>
+  ? <div className="employee-message__text"><IncidentDocument markdown={text}/>{status.type === 'running' && <span className="employee-caret" aria-hidden="true"/>}</div>
   : null;
 const ReasoningPart: ReasoningMessagePartComponent = ({ text, status }) => <details className="employee-reasoning" open={status.type === 'running'}>
   <summary><Brain size={14} aria-hidden="true"/><span className={status.type === 'running' ? 'employee-shimmer' : ''}>{status.type === 'running' ? 'Thinking…' : 'Thought'}</span></summary>
   <p>{text}</p>
 </details>;
-const ToolPart: ToolCallMessagePartComponent = ({ toolName, argsText, result }) => {
-  const { label, Icon } = toolLabels[toolName] ?? { label: toolName, Icon: FileText };
+const ToolPart: ToolCallMessagePartComponent = ({ toolName, args, argsText, result }) => {
+  const { label: toolLabel, Icon } = toolLabels[toolName] ?? { label: toolName, Icon: FileText };
   const outcome = typeof result === 'object' && result ? result as { status?: string; output?: string } : undefined;
-  const state = outcome?.status ?? 'started';
-  return <motion.div className={`employee-tool is-${state}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
-    <div className="employee-tool__head"><Icon size={15} aria-hidden="true"/><strong>{label}</strong>
-      <span className="employee-tool__state" role="status">{state === 'started' ? <><Loader2 size={14} className="employee-spin" aria-hidden="true"/>Running</> : state === 'failed' ? <><X size={14} aria-hidden="true"/>Failed</> : <><Check size={14} aria-hidden="true"/>Done</>}</span></div>
-    {argsText && <code className="employee-tool__detail">{argsText}</code>}
-    {outcome?.output && <details className="employee-tool__result"><summary>Output</summary><pre>{outcome.output}</pre></details>}
+  const meta = (args ?? {}) as { label?: string; blocked?: boolean };
+  const state = meta.blocked ? 'blocked' : outcome?.status ?? 'started';
+  return <motion.div className={`employee-tool is-${state}`} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2 }}>
+    <details>
+      <summary className="employee-tool__head">
+        <span className="employee-tool__state" role="status" aria-label={state === 'started' ? 'Running' : state === 'failed' ? 'Failed' : state === 'blocked' ? 'Blocked' : 'Done'}>{state === 'started' ? <Loader2 size={15} className="employee-spin" aria-hidden="true"/> : state === 'failed' || state === 'blocked' ? <X size={15} aria-hidden="true"/> : <Check size={15} aria-hidden="true"/>}</span>
+        <span className={`employee-tool__label${state === 'started' ? ' employee-shimmer' : ''}`}>{meta.label || toolLabel}</span>
+        <span className="employee-tool__kind"><Icon size={13} aria-hidden="true"/>{toolLabel}</span>
+      </summary>
+      {argsText && <code className="employee-tool__detail">{argsText}</code>}
+      {outcome?.output && <pre className="employee-tool__output">{outcome.output}</pre>}
+    </details>
   </motion.div>;
 };
 const partComponents = { Text: TextPart, Reasoning: ReasoningPart, tools: { Fallback: ToolPart } };
@@ -53,8 +60,9 @@ function contentOf(entry: EmployeeConversationEntry): ThreadMessageLike['content
   const parts: Exclude<ThreadMessageLike['content'], string>[number][] = [];
   for (const step of entry.steps ?? []) {
     if (step.thought) parts.push({ type: 'reasoning', text: step.thought });
+    const { label, blocked } = stepLabel(step);
     parts.push({ type: 'tool-call', toolCallId: step.toolCallId, toolName: step.tool, argsText: step.detail ?? '',
-      args: { detail: step.detail ?? '' },
+      args: { label, blocked },
       ...(step.status === 'started' ? {} : { result: { status: step.status, output: step.result ?? '' } }) });
   }
   if (entry.reasoning) parts.push({ type: 'reasoning', text: entry.reasoning });

@@ -232,6 +232,8 @@ class Controller:
         """Only an authenticated request can supply a payment execution cue."""
         words = text.casefold()
         return bool(re.search(r'\bpay\b', words) or re.search(
+            r'\b(?:place|make|submit|raise|create)\b.{0,30}\b(?:order|purchase order|po)\b', words) or re.search(
+            r'\b(?:reorder|restock|replenish)\b', words) or re.search(
             r'\b(?:send|submit|execute|transfer|make|complete)\b.{0,50}'
             r'\b(?:payment|remittance|funds)\b', words))
 

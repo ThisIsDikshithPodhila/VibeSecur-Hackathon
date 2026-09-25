@@ -280,9 +280,28 @@ function stepsByTurn(run: Run): Map<string, EmployeeStep[]> {
   return turns;
 }
 
+export function stepLabel(step: Pick<EmployeeStep, 'tool' | 'detail' | 'result' | 'status'>): { label: string; blocked: boolean } {
+  const detail = step.detail ?? '';
+  const blocked = /transaction_mismatch|turn_scope_denied|Payment differs from trusted mandate/.test(step.result ?? '');
+  if (step.tool === 'file_editor') return { label: 'Writing work note', blocked };
+  if (/\/api\/payments/.test(detail)) return { label: blocked ? 'Payment blocked by VibeSecur' : 'Submitting payment', blocked };
+  if (/\/api\/purchase-orders/.test(detail)) return { label: 'Placing purchase order', blocked };
+  if (/\/api\/inventory/.test(detail)) return { label: 'Checking inventory levels', blocked };
+  if (/\/api\/context/.test(detail)) return { label: 'Checking trusted supplier record', blocked };
+  if (/\/documents\/invoice/.test(detail)) return { label: 'Reading supplier invoice', blocked };
+  if (/\/portal/.test(detail)) return { label: 'Opening supplier portal', blocked };
+  if (step.tool === 'browser') return { label: detail ? 'Reviewing the portal page' : 'Using the browser', blocked };
+  return { label: detail ? 'Running a workspace command' : 'Working in the terminal', blocked };
+}
+
 export function conversationFromRun(run: Run | null, locale?: string): EmployeeConversationEntry[] {
   if (!run) return [];
   const steps = stepsByTurn(run);
+  const askedAt = new Map<string, number>();
+  for (const event of run.events) {
+    const turnId = nonEmptyString(event.data?.turnId);
+    if (event.kind === 'conversation.user' && turnId) askedAt.set(turnId, event.sequence);
+  }
   const entries: EmployeeConversationEntry[] = run.events
     .filter((event) => event.kind === 'conversation.user' || event.kind === 'conversation.maya')
     .sort((left, right) => left.sequence - right.sequence)
@@ -290,10 +309,12 @@ export function conversationFromRun(run: Run | null, locale?: string): EmployeeC
       const text = conversationText(event);
       if (!text) return [];
       const sourceKind = event.kind as EmployeeConversationEntry['sourceKind'];
-      const turnSteps = sourceKind === 'conversation.maya' ? steps.get(nonEmptyString(event.data.turnId) || '') : undefined;
+      const turnId = nonEmptyString(event.data.turnId) || '';
+      const turnSteps = sourceKind === 'conversation.maya' ? steps.get(turnId) : undefined;
+      const asked = sourceKind === 'conversation.maya' ? askedAt.get(turnId) : undefined;
       return [{
         id: event.eventId || `${event.sequence}-${event.kind}`,
-        sequence: event.sequence,
+        sequence: asked !== undefined && asked < event.sequence ? asked + 0.5 : event.sequence,
         role: sourceKind === 'conversation.user' ? 'user' as const : 'maya' as const,
         timestamp: event.timestamp,
         timeLabel: eventTime(event.timestamp, locale),
@@ -475,7 +496,8 @@ export type WorkflowSuggestion = { text: string; kind: WorkflowSuggestionKind };
 export function workflowSuggestions(run: Run | null): WorkflowSuggestion[] {
   const invoice = run?.protected.invoice.invoiceId;
   const pay = { text: invoice ? `Process invoice ${invoice} and pay the approved supplier` : 'Process the supplier invoice and pay the approved supplier', kind: 'pay' } as const;
-  if (!run) return [pay, { text: 'Show invoice details', kind: 'inspect' }, { text: 'Check supplier status', kind: 'inspect' }];
+  const order = { text: 'Place the order for whatever is missing in my inventory', kind: 'pay' } as const;
+  if (!run) return [order, { text: 'Which inventory items are below their reorder point?', kind: 'inspect' }, pay];
   const blocked = incidentOutcomeFromRun(run).status === 'blocked';
   const paid = run.protected.ledger.length > 0;
   if (blocked && paid) return [
@@ -488,5 +510,5 @@ export function workflowSuggestions(run: Run | null): WorkflowSuggestion[] {
     { text: 'Explain the blocked change', kind: 'explain' },
   ];
   if (paid) return [{ text: 'Show the payment receipt', kind: 'receipt' }, { text: 'Summarize what you did', kind: 'explain' }];
-  return [pay, { text: 'Show invoice details', kind: 'inspect' }, { text: 'Show pending approvals', kind: 'inspect' }];
+  return [order, { text: 'Which inventory items are below their reorder point?', kind: 'inspect' }, pay];
 }
