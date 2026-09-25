@@ -403,11 +403,11 @@ class Controller:
                         'available', 'unavailable', 'input_too_large'):
                     data['status'] = assessed['status']
                     provenance = assessed.get('provenance')
-                    from vibesecur.assessment import MODEL_REVISION
+                    from vibesecur.assessment import ASSESSOR_REVISIONS
                     pinned = (isinstance(provenance, dict) and
                               provenance.get('sourceDigest') == source_digest and
-                              assessed.get('modelRevision') == MODEL_REVISION)
-                    data['modelRevision'] = MODEL_REVISION if pinned else None
+                              assessed.get('modelRevision') in ASSESSOR_REVISIONS)
+                    data['modelRevision'] = assessed['modelRevision'] if pinned else None
                     if (assessed['status'] == 'available' and
                             pinned and
                             assessed.get('label') in ('suitable', 'purpose_mismatch') and

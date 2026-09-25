@@ -12,8 +12,13 @@ import threading
 import time
 import uuid
 
+import httpx
+
 MODEL_REPO = 'convaiinnovations/laya'
 MODEL_REVISION = '55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851'
+JEV_MODEL = 'typesafe/jev-1.13'
+JEV_URL = 'https://openrouter.ai/api/v1/systemone'
+ASSESSOR_REVISIONS = frozenset({MODEL_REVISION, JEV_MODEL})
 MAX_LEN = 512
 HEAD_LEN = 192
 STATE_LIMIT = 300  # 320 state tokens less a 20 token serialization/special-token margin
@@ -23,7 +28,8 @@ QUESTIONS = {'purpose': {'type':'choice',
                                      'purpose_mismatch':'The action redirects payment or advances a different purchase or beneficiary.'}}}
 
 
-def _result(status, source, started, *, truncation=False, label=None, score=None):
+def _result(status, source, started, *, truncation=False, label=None, score=None,
+            revision=MODEL_REVISION):
     provenance = {}
     for key in ('sourceId','kind','origin','capturedAt'):
         if key in source:
@@ -41,7 +47,7 @@ def _result(status, source, started, *, truncation=False, label=None, score=None
         provenance['sourceDigest']=hashlib.sha256(canonical.encode()).hexdigest()
     return {'status':status,'label':label,'rawScore':score,'calibrated':False,
             'provenance':provenance,'truncationDetected':truncation,
-            'modelRevision':MODEL_REVISION,'latencyMs':round((time.monotonic()-started)*1000,2)}
+            'modelRevision':revision,'latencyMs':round((time.monotonic()-started)*1000,2)}
 
 
 class LayaAssessment:
@@ -186,13 +192,56 @@ class ChildBackend:
         return self._call('predict',state,questions)
 
 
+class JevAssessment:
+    """TypeSafe Jev through OpenRouter's decisions endpoint; same advisory contract as Laya."""
+    def __init__(self, api_key, transport=None, timeout=5.0, url=JEV_URL):
+        self.client=httpx.Client(transport=transport,timeout=timeout)
+        self.api_key=api_key
+        self.url=url
+
+    def assess(self, mission:dict, action:dict, source:dict) -> dict:
+        started=time.monotonic()
+        if not all(isinstance(item,dict) for item in (mission,action,source)):
+            return _result('unavailable',{},started,revision=JEV_MODEL)
+        try:
+            encoded=json.dumps({'mission':mission,'action':action,'source':source},sort_keys=True,
+                               separators=(',',':'),ensure_ascii=False,allow_nan=False)
+        except (TypeError,ValueError):
+            return _result('unavailable',source,started,revision=JEV_MODEL)
+        if len(encoded.encode())>8192:
+            return _result('input_too_large',source,started,truncation=True,revision=JEV_MODEL)
+        try:
+            response=self.client.post(self.url,headers={'Authorization':'Bearer '+self.api_key,
+                                                        'X-Title':'VibeSecur'},
+                                      json={'model':JEV_MODEL,'state':json.loads(encoded),
+                                            'questions':QUESTIONS})
+            response.raise_for_status()
+            answer=response.json()['answers']['purpose']
+            label=answer['choice']
+            probability=answer['probabilities'][label]
+            if (label not in ('suitable','purpose_mismatch') or
+                    type(probability) not in (int,float) or not math.isfinite(probability) or
+                    not 0<=probability<=1):
+                raise ValueError('Malformed advisory output')
+        except (httpx.HTTPError,ValueError,KeyError,TypeError):
+            return _result('unavailable',source,started,revision=JEV_MODEL)
+        return _result('available',source,started,label=label,score=float(probability),
+                       revision=JEV_MODEL)
+
+
 _backend=None
 _backend_lock=threading.Lock()
+_jev=None
 
 
 def assess(mission:dict, action:dict, source:dict) -> dict:
     """Default remains unavailable until the pinned CPU child is explicitly enabled."""
     started=time.monotonic()
+    if os.environ.get('VIBESECUR_ASSESSOR')=='jev' and os.environ.get('OPENROUTER_API_KEY'):
+        global _jev
+        if _jev is None:
+            _jev=JevAssessment(os.environ['OPENROUTER_API_KEY'])
+        return _jev.assess(mission,action,source)
     if os.environ.get('VIBESECUR_LAYA_ENABLED')!='1':
         return _result('unavailable',source if isinstance(source,dict) else {},started)
     global _backend

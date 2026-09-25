@@ -88,13 +88,13 @@ def source_digest(source):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def typed_response_valid(item,response):
+def typed_response_valid(item,response,revision=None):
     from vibesecur.assessment import MODEL_REVISION
     if not isinstance(response,dict) or response.get('status') not in (
             'available','unavailable','input_too_large'):
         return False
     provenance=response.get('provenance')
-    if (response.get('modelRevision')!=MODEL_REVISION or response.get('calibrated') is not False or
+    if (response.get('modelRevision')!=(revision or MODEL_REVISION) or response.get('calibrated') is not False or
             not isinstance(provenance,dict) or
             provenance.get('sourceId')!=item['source'].get('sourceId') or
             provenance.get('sourceDigest')!=source_digest(item['source']) or
@@ -144,6 +144,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--mode',choices=['contract','infer','prefetch'],required=True)
     parser.add_argument('--output',type=Path)
+    parser.add_argument('--backend',choices=['laya','jev'],default='laya')
     args=parser.parse_args()
     if args.mode=='prefetch':
         from vibesecur.assessment import MODEL_REVISION
@@ -160,7 +161,9 @@ def main():
             code=0
     else:
         inputs=inference_inputs() if args.mode=='infer' else fixture_contract()[0]
-        from vibesecur.assessment import MODEL_REVISION
+        from vibesecur.assessment import JEV_MODEL,MODEL_REVISION
+        if args.backend=='jev':
+            MODEL_REVISION=JEV_MODEL
         from vibesecur.assessment import MAX_LEN,HEAD_LEN,STATE_LIMIT
         result={'status':'contract_valid','pairCount':8,'inputCount':len(inputs),
                 'modelRevision':MODEL_REVISION,'inferenceAttempted':False,
@@ -173,7 +176,13 @@ def main():
         if args.mode=='infer':
             from vibesecur.assessment import assess
             try:
-                result['checkpoint']=checkpoint_manifest(remote=False)
+                if args.backend=='jev':
+                    if not os.environ.get('OPENROUTER_API_KEY'):
+                        raise ValueError('OPENROUTER_API_KEY is not set')
+                    result['checkpoint']={'provider':'openrouter','model':MODEL_REVISION}
+                    result.pop('inputBudget')
+                else:
+                    result['checkpoint']=checkpoint_manifest(remote=False)
             except (OSError,ValueError,ImportError) as exc:
                 result.update(status='blocked',reason='checkpoint_unavailable_or_mismatch',
                               checkpointError=type(exc).__name__)
@@ -185,11 +194,13 @@ def main():
                 print(rendered)
                 return code
             os.environ['VIBESECUR_LAYA_ENABLED']='1'
+            if args.backend=='jev':
+                os.environ['VIBESECUR_ASSESSOR']='jev'
             predictions=[]
             invalid_outputs=0
             for item in inputs:
                 response=assess(item['mission'],item['action'],item['source'])
-                if not typed_response_valid(item,response):
+                if not typed_response_valid(item,response,MODEL_REVISION):
                     invalid_outputs+=1
                     response={'status':'unavailable','label':None,'rawScore':None,
                               'latencyMs':None,'truncationDetected':False,

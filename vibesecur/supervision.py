@@ -6,7 +6,7 @@ import json
 import math
 
 from vibesecur.store import StoreError, TRANSACTION_KEYS
-from vibesecur.assessment import MODEL_REVISION
+from vibesecur.assessment import ASSESSOR_REVISIONS
 
 
 def _valid_assessment(value, source):
@@ -17,7 +17,7 @@ def _valid_assessment(value, source):
                                      ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     provenance = value.get('provenance')
     latency = value.get('latencyMs')
-    if (value.get('modelRevision') != MODEL_REVISION or value.get('calibrated') is not False
+    if (value.get('modelRevision') not in ASSESSOR_REVISIONS or value.get('calibrated') is not False
             or type(value.get('truncationDetected')) is not bool
             or type(latency) not in (int, float) or not math.isfinite(latency) or latency < 0
             or not isinstance(provenance, dict) or provenance.get('sourceDigest') != digest
