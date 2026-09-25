@@ -78,7 +78,9 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
       role: entry.role === 'maya' ? 'assistant' : 'user',
       createdAt: messageDate(entry.timestamp),
       content: contentOf(entry),
-      status: entry.streaming ? { type: 'running' } : { type: 'complete', reason: 'stop' },
+      ...(entry.role === 'maya'
+        ? { status: entry.streaming ? { type: 'running' } as const : { type: 'complete', reason: 'stop' } as const }
+        : {}),
     }),
     // Replies come from the durable feed and the live worker stream; nothing is synthesized here.
     isRunning: messages.some(entry => entry.streaming),
