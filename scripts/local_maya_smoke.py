@@ -3,7 +3,7 @@
 model broker (OpenRouter), a real payment service, and the trusted effect store.
 
 Not an OpenShell boundary gate: the worker container uses host networking.
-Requires OPENROUTER_API_KEY; VIBESECUR_ASSESSOR=jev enables the Jev assessment.
+Requires OPENROUTER_API_KEY, or VIBESECUR_MODEL_PROVIDER=azure with AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_API_KEY; VIBESECUR_ASSESSOR=jev enables the Jev assessment.
 """
 from __future__ import annotations
 
@@ -68,8 +68,10 @@ def wait_ready(url):
 
 
 def main() -> int:
-    if not os.environ.get('OPENROUTER_API_KEY'):
-        raise SystemExit('OPENROUTER_API_KEY is required')
+    key = ('OPENROUTER_API_KEY' if os.environ['VIBESECUR_MODEL_PROVIDER'] == 'openrouter'
+           else 'AZURE_OPENAI_API_KEY')
+    if not os.environ.get(key):
+        raise SystemExit(key + ' is required')
     data = Path(tempfile.mkdtemp(prefix='vibesecur-smoke-'))
     app = create_app(data_dir=str(data), access_code='local-smoke', public_origin='http://127.0.0.1:8000',
                      payment_gateway=PaymentGateway('http://{environmentId}.invalid', provisioner=LocalOrigin()))

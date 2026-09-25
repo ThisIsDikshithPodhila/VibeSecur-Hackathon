@@ -139,3 +139,10 @@ def test_openrouter_relay_prefixes_model_and_keeps_key_server_side(tmp_path):
     assert sent['model'] == 'openai/gpt-4.1' and 'max_completion_tokens' not in sent and sent['max_tokens'] == 4096
     with pytest.raises(ValueError):
         ModelBroker(security, 'https://evil.example/api/v1', 'k', provider='openrouter')
+
+
+def test_azure_ai_foundry_endpoint_is_a_trusted_azure_relay(tmp_path):
+    security = SecurityStore(str(tmp_path/'security.db'))
+    ModelBroker(security, 'https://demo-resource.services.ai.azure.com/openai/v1', 'k')
+    with pytest.raises(ValueError):
+        ModelBroker(security, 'https://services.ai.azure.com.evil.example/openai/v1', 'k')

@@ -84,7 +84,7 @@ class ModelBroker:
             if parsed.scheme != 'https' or parsed.hostname != 'openrouter.ai':
                 raise ValueError('OpenRouter relay endpoint must be https://openrouter.ai')
         elif (provider != 'azure' or parsed.scheme != 'https' or not parsed.hostname or
-                not parsed.hostname.endswith('.openai.azure.com')):
+                not parsed.hostname.endswith(('.openai.azure.com', '.services.ai.azure.com'))):
             raise ValueError('Azure relay endpoint must be a trusted HTTPS Azure OpenAI endpoint')
         self.security, self.endpoint, self.api_key = security, endpoint.rstrip('/'), api_key
         self.provider, self.model_prefix = provider, model_prefix
