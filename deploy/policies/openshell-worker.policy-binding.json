@@ -1,5 +1,5 @@
 {
-  "sourceTemplateSha256": "8dbc5d40c5a66388721353319595a70b2ef909f9a9a55de5b7344a0851e7f1ac",
+  "sourceTemplateSha256": "a62a1fdf15da79f8df2764403baa0d7ca61c66229641aad9c8adb9f11a89b342",
   "policy": {
     "version": 1,
     "filesystem_policy": {
@@ -30,7 +30,10 @@
         "name": "invoice-application",
         "endpoints": [
           {
-            "host": "__PAYMENT_HOST__",
+            "host": "__PAYMENT_IP__",
+            "allowed_ips": [
+              "__PAYMENT_IP__/32"
+            ],
             "port": 8000,
             "protocol": "rest",
             "enforcement": "enforce",
@@ -51,6 +54,18 @@
                 "allow": {
                   "method": "GET",
                   "path": "/api/context"
+                }
+              },
+              {
+                "allow": {
+                  "method": "GET",
+                  "path": "/api/inventory"
+                }
+              },
+              {
+                "allow": {
+                  "method": "POST",
+                  "path": "/api/purchase-orders"
                 }
               },
               {
@@ -78,7 +93,10 @@
         "name": "model-broker",
         "endpoints": [
           {
-            "host": "host.openshell.internal",
+            "host": "172.30.0.1",
+            "allowed_ips": [
+              "172.30.0.1/32"
+            ],
             "port": 8000,
             "protocol": "rest",
             "enforcement": "enforce",

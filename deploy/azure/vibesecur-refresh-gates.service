@@ -1,0 +1,10 @@
+[Unit]
+Description=Remeasure VibeSecur worker, repair and verifier boundaries
+After=vibesecur-api.service docker.service
+Requires=vibesecur-api.service
+[Service]
+Type=oneshot
+User=demo
+WorkingDirectory=/srv/vibesecur/app
+ExecStart=/srv/vibesecur/.venv/bin/python deploy/azure/refresh-gates.py
+TimeoutStartSec=600

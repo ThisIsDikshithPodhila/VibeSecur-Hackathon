@@ -25,6 +25,8 @@ from deploy.repair.route_proof import route_proof
 from deploy.openshell.policy_binding import expected_policy, effective_policy
 from deploy.openshell.worker_network import validate as validate_worker_network
 from deploy.openshell.worker_network import validate_attachment as validate_worker_attachment
+from deploy.openshell.worker_network import nested_route_proof
+from deploy.openshell.worker_network import effective_forwarding_denial
 
 
 PROBE = r'''
@@ -97,6 +99,41 @@ def _check_host_verifier(url: str) -> dict:
 def _host_verifier_ready(check: dict) -> bool:
     return (check.get("reachable") is True and check.get("httpStatus") == 200
             and check.get("identityMatched") is True)
+
+
+def _owned_public_exact_host_check() -> dict:
+    """Require HTTPS/SNI on the exact owned IP used by sandbox denial."""
+    try:
+        result = subprocess.run(["curl", "--noproxy", "*", "--resolve",
+                                 f"{OWNED_PUBLIC_HOST}:443:{OWNED_PUBLIC_IP}",
+                                 "--silent", "--show-error", "--output", "/dev/null",
+                                 "--write-out", "%{http_code}", "--max-time", "5",
+                                 OWNED_PUBLIC_HEALTH_URL], capture_output=True,
+                                text=True, timeout=7, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {"reachable": False, "httpStatus": None}
+    return {"reachable": result.returncode == 0,
+            "httpStatus": int(result.stdout) if result.stdout.isdigit() else None,
+            "exitCode": result.returncode, "ip": OWNED_PUBLIC_IP}
+
+
+def _exact_bridge_reject_counter(rules: str, counters: str, bridge: str) -> int:
+    """Read only the first, exact host INPUT rule measured for this bridge."""
+    expected = ("-A INPUT -s 10.200.0.0/24 -d 172.30.0.1/32 -i " + bridge
+                + " -p tcp -m tcp --dport 8000 -j REJECT --reject-with tcp-reset")
+    input_rules = [line.strip() for line in rules.splitlines() if line.startswith("-A INPUT ")]
+    if not input_rules or input_rules[0] != expected:
+        raise ValueError("Exact first bridge INPUT reject rule is unavailable")
+    rows = [line.split() for line in counters.splitlines() if re.match(r"^\s*\d+\s+\d+\s+\d+\s", line)]
+    if not rows or len(rows[0]) < 13:
+        raise ValueError("Exact bridge INPUT counter is unavailable")
+    row = rows[0]
+    if (row[0] != "1" or not row[1].isdigit() or not row[2].isdigit()
+            or row[3] != "REJECT"
+            or row[4:10] != ["6", "--", bridge, "*", "10.200.0.0/24", "172.30.0.1"]
+            or row[10:] != ["tcp", "dpt:8000", "reject-with", "tcp-reset"]):
+        raise ValueError("Bridge INPUT counter differs from exact reject rule")
+    return int(row[1])
 
 
 def gate(config: dict) -> dict:
@@ -205,7 +242,10 @@ def gate(config: dict) -> dict:
 def gate_openshell(config: dict) -> dict:
     """Measure one running OpenShell sandbox with exact per-run payment policy."""
     required = ("image", "network", "paymentHost", "otherPaymentHost", "sandbox",
-                "policyTemplatePath")
+                "policyTemplatePath", "paymentIp", "paymentContainerId",
+                "paymentImageDigest", "paymentEnvironmentId", "sourceRunId",
+                "otherPaymentIp", "otherPaymentContainerId", "otherPaymentImageDigest",
+                "otherPaymentEnvironmentId")
     missing = [key for key in required if not config.get(key)]
     if missing:
         return {"passed": False, "status": "blocked", "reason": "missing_config", "missing": missing}
@@ -220,7 +260,11 @@ def gate_openshell(config: dict) -> dict:
     sandbox = config["sandbox"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}", sandbox):
         return {"passed": False, "status": "blocked", "reason": "invalid_sandbox_name"}
-    public_target_check = _check_host(OWNED_PUBLIC_HEALTH_URL)
+    try:
+        expected_policy(config["policyTemplatePath"], config["paymentIp"])
+    except (ValueError, OSError, TypeError):
+        return {"passed": False, "status": "blocked", "reason": "invalid_payment_ip_policy"}
+    public_target_check = _owned_public_exact_host_check()
     if not (public_target_check.get("reachable") and public_target_check.get("httpStatus") == 200):
         return {"passed": False, "status": "blocked", "reason": "owned_public_target_unavailable",
                 "externalProbeUrl": OWNED_PUBLIC_HEALTH_URL,
@@ -250,7 +294,7 @@ def gate_openshell(config: dict) -> dict:
     try:
         template = Path(config["policyTemplatePath"]).read_bytes()
         approved_policy, policy_binding = expected_policy(config["policyTemplatePath"],
-                                                           config["paymentHost"])
+                                                           config["paymentIp"])
         policy = run(cli, "policy", "get", sandbox, "--full", "--output", "json")
         sandboxes = run(cli, "sandbox", "list", "--output", "json")
         matching = [item for item in json.loads(sandboxes.stdout)
@@ -263,8 +307,47 @@ def gate_openshell(config: dict) -> dict:
         network_info = json.loads(run("docker", "network", "inspect", config["network"]).stdout)[0]
         validate_worker_network(network_info)
         validate_worker_attachment(info, network_info["Id"])
+        payment_info = json.loads(run("docker", "inspect", "--type", "container",
+                                      config["paymentHost"]).stdout)[0]
+        payment_networks = payment_info.get("NetworkSettings", {}).get("Networks") or {}
+        payment_attachment = payment_networks.get(config["network"]) or {}
+        payment_labels = payment_info.get("Config", {}).get("Labels") or {}
+        if (payment_info.get("Name") != "/" + config["paymentHost"]
+                or payment_info.get("Id") != config["paymentContainerId"]
+                or payment_info.get("Image") != config["paymentImageDigest"]
+                or payment_info.get("State", {}).get("Running") is not True
+                or payment_labels.get("vibesecur.run-id") != config["sourceRunId"]
+                or payment_labels.get("vibesecur.environment-id") != config["paymentEnvironmentId"]
+                or payment_attachment.get("NetworkID") != network_info["Id"]
+                or payment_attachment.get("IPAddress") != config["paymentIp"]
+                or set(payment_networks) != {"openshell-docker", config["network"]}):
+            raise ValueError("Protected payment endpoint identity differs from gate config")
+        sibling_info = json.loads(run("docker", "inspect", "--type", "container",
+                                      config["otherPaymentHost"]).stdout)[0]
+        sibling_networks = sibling_info.get("NetworkSettings", {}).get("Networks") or {}
+        sibling_attachment = sibling_networks.get(config["network"]) or {}
+        sibling_labels = sibling_info.get("Config", {}).get("Labels") or {}
+        if (sibling_info.get("Name") != "/" + config["otherPaymentHost"]
+                or sibling_info.get("Id") != config["otherPaymentContainerId"]
+                or sibling_info.get("Image") != config["otherPaymentImageDigest"]
+                or sibling_info.get("State", {}).get("Running") is not True
+                or sibling_labels.get("vibesecur.run-id") != config["sourceRunId"]
+                or sibling_labels.get("vibesecur.environment-id") != config["otherPaymentEnvironmentId"]
+                or sibling_attachment.get("NetworkID") != network_info["Id"]
+                or sibling_attachment.get("IPAddress") != config["otherPaymentIp"]
+                or set(sibling_networks) != {"openshell-docker", config["network"]}
+                or config["otherPaymentIp"] == config["paymentIp"]):
+            raise ValueError("Sibling payment endpoint identity differs from gate config")
         expected_subnet = network_info["IPAM"]["Config"][0]["Subnet"]
         gateway = network_info["IPAM"]["Config"][0]["Gateway"]
+        bridge = "br-" + network_info["Id"][:12]
+        firewall_rule = ["!", "-d", expected_subnet, "-i", bridge, "-j", "DROP"]
+        chain_results = {name: run("sudo", "-n", "iptables", "-S", name)
+                         for name in ("FORWARD", "DOCKER-USER", "DOCKER-FORWARD",
+                                      "DOCKER-CT", "DOCKER-INTERNAL")}
+        chains = {name: result.stdout for name, result in chain_results.items()}
+        forwarding_denied = (all(result.returncode == 0 for result in chain_results.values())
+                             and effective_forwarding_denial(chains, bridge))
         host_gateway_check = _check_host(f"http://{gateway}:8000/health")
         if not (host_gateway_check.get("reachable")
                 and host_gateway_check.get("httpStatus") == 200):
@@ -277,6 +360,9 @@ def gate_openshell(config: dict) -> dict:
                     "hostChecks": {"external": public_target_check,
                                    "hostGateway": host_gateway_check,
                                    "verifier": host_verifier_check}}
+        sibling_host_check = _check_host("http://" + config["otherPaymentIp"] + ":8000/portal")
+        if sibling_host_check.get("reachable") is not True or sibling_host_check.get("httpStatus") != 200:
+            raise ValueError("Owned sibling payment service unavailable")
         try:
             policy_effective_hash = effective_policy(policy.stdout, approved_policy, sandbox)
             policy_enforced = True
@@ -290,22 +376,56 @@ def gate_openshell(config: dict) -> dict:
         if route_capture.returncode:
             raise RuntimeError("Sandbox route table unavailable")
         tables = json.loads(route_capture.stdout)
-        route = route_proof(tables["ipv4"], tables["ipv6"], expected_subnet)
-        payment = "http://" + config["paymentHost"] + ":8000"
+        route = nested_route_proof(tables["ipv4"], tables["ipv6"])
+        payment = "http://" + config["paymentIp"] + ":8000"
         probes = {
             "applicationPortal": probe("applicationPortal", payment + "/portal"),
             "applicationContext": probe("applicationContext", payment + "/api/context"),
             "applicationPost": probe("applicationPost", payment + "/api/payments", method="POST", body="{}"),
-            "modelRelay": probe("modelRelay", "http://host.openshell.internal:8000/model/v1/chat/completions",
+            "modelRelay": probe("modelRelay", "http://172.30.0.1:8000/model/v1/chat/completions",
                                 method="POST", body="{}"),
-            "modelResponses": probe("modelResponses", "http://host.openshell.internal:8000/model/v1/responses",
+            "modelResponses": probe("modelResponses", "http://172.30.0.1:8000/model/v1/responses",
                                     method="POST", body="{}"),
-            "controller": probe("controller", "http://host.openshell.internal:8000/health"),
-            "verifier": probe("verifier", "http://host.openshell.internal:8000/internal/verifier/health"),
+            "controller": probe("controller", f"http://{gateway}:8000/health"),
+            "verifier": probe("verifier", f"http://{gateway}:8000/internal/verifier/health"),
             "hostGateway": probe("hostGateway", f"http://{gateway}:8000/health"),
-            "otherPayment": probe("otherPayment", "http://" + config["otherPaymentHost"] + ":8000/portal"),
+            "otherPayment": probe("otherPayment", "http://" + config["otherPaymentIp"] + ":8000/portal"),
             "external": probe("external", OWNED_PUBLIC_HEALTH_URL),
         }
+        input_before = _exact_bridge_reject_counter(
+            run("sudo", "-n", "iptables", "-S", "INPUT").stdout,
+            run("sudo", "-n", "iptables", "-L", "INPUT", "-vxn", "--line-numbers").stdout,
+            bridge)
+        direct_bridge = run(cli, "sandbox", "exec", "--name", sandbox, "--", "curl",
+                            "--noproxy", "*", "--silent", "--show-error",
+                            "--output", "/dev/null", "--write-out", "%{http_code}",
+                            "--connect-timeout", "3", "--max-time", "5",
+                            f"http://{gateway}:8000/health")
+        input_after = _exact_bridge_reject_counter(
+            run("sudo", "-n", "iptables", "-S", "INPUT").stdout,
+            run("sudo", "-n", "iptables", "-L", "INPUT", "-vxn", "--line-numbers").stdout,
+            bridge)
+        probes["hostGatewayDirect"] = {"exitCode": direct_bridge.returncode,
+                                         "httpStatus": int(direct_bridge.stdout)
+                                         if direct_bridge.stdout.isdigit() else None,
+                                         "inputRejectCounterBefore": input_before,
+                                         "inputRejectCounterAfter": input_after,
+                                         "counterDelta": input_after - input_before}
+        direct = run(cli, "sandbox", "exec", "--name", sandbox, "--", "curl",
+                     "--noproxy", "*", "--resolve",
+                     f"{OWNED_PUBLIC_HOST}:443:{OWNED_PUBLIC_IP}",
+                     "--silent", "--show-error", "--output", "/dev/null",
+                     "--write-out", "%{http_code}", "--connect-timeout", "3",
+                     "--max-time", "5", OWNED_PUBLIC_HEALTH_URL)
+        probes["externalDirect"] = {"exitCode": direct.returncode,
+                                    "httpStatus": int(direct.stdout) if direct.stdout.isdigit() else None,
+                                    "errorType": "connect_failed" if direct.returncode == 7 else None,
+                                    "url": OWNED_PUBLIC_HEALTH_URL, "ip": OWNED_PUBLIC_IP}
+        public_target_after = _owned_public_exact_host_check()
+        host_gateway_after = _check_host(f"http://{gateway}:8000/health")
+        host_verifier_after = _check_host_verifier(
+            f"http://{gateway}:8000/internal/verifier/health")
+        sibling_host_after = _check_host("http://" + config["otherPaymentIp"] + ":8000/portal")
         fs = run(cli, "sandbox", "exec", "--name", sandbox, "--", "sh", "-c",
                  "test ! -e /var/run/docker.sock && echo socket=absent; "
                  "echo probe > /workspace/probe && echo workspace=writeable; "
@@ -322,16 +442,29 @@ def gate_openshell(config: dict) -> dict:
         "modelRelayReachable": ("Invalid model capability" in probes["modelRelay"]["body"]
                                 and "Invalid model capability" in probes["modelResponses"]["body"]),
         "controllerDenied": denied(probes["controller"]),
-        "verifierDenied": host_verifier_check["identityMatched"] and denied(probes["verifier"]),
-        "hostGatewayDenied": host_gateway_check.get("httpStatus") == 200 and
-                             denied(probes["hostGateway"]),
-        "otherPaymentDenied": denied(probes["otherPayment"]),
+        "verifierDenied": (_host_verifier_ready(host_verifier_check)
+                            and _host_verifier_ready(host_verifier_after)
+                            and denied(probes["verifier"])),
+        "hostGatewayDenied": (host_gateway_check.get("httpStatus") == 200
+                              and host_gateway_after.get("httpStatus") == 200
+                              and denied(probes["hostGateway"])
+                              and probes["hostGatewayDirect"]["httpStatus"] == 0
+                              and probes["hostGatewayDirect"]["exitCode"] != 0
+                              and probes["hostGatewayDirect"]["counterDelta"] > 0),
+        "otherPaymentDenied": (sibling_host_check.get("httpStatus") == 200
+                               and sibling_host_after.get("httpStatus") == 200
+                               and denied(probes["otherPayment"])),
         "metadataDenied": None,
         "azurePlatformDenied": None,
-        "providerRouteDenied": route["providerRouteDenied"] and network_info.get("Internal") is True,
-        "externalDenied": denied(probes["external"]) or
-                          (probes["external"]["httpStatus"] in (None, 0) and
-                           "CONNECT tunnel failed, response 403" in probes["external"]["stderr"]),
+        "providerRouteDenied": None,
+        "nestedProxyRouteAttested": route["nestedDefaultViaSupervisor"],
+        "hostForwardingDenied": forwarding_denied,
+        "externalDenied": (forwarding_denied and public_target_check.get("httpStatus") == 200
+                           and public_target_after.get("httpStatus") == 200
+                           and probes["externalDirect"]["exitCode"] == 7
+                           and probes["externalDirect"]["httpStatus"] == 0
+                           and (denied(probes["external"]) or
+                                "CONNECT tunnel failed, response 403" in probes["external"]["stderr"])),
         "dockerSocketDenied": "socket=absent" in fs.stdout,
         "workspaceWritableEtcDenied": "workspace=writeable" in fs.stdout and "etc=denied" in fs.stdout,
         "policyEnforced": policy_enforced,
@@ -341,26 +474,50 @@ def gate_openshell(config: dict) -> dict:
         "notPrivileged": info.get("HostConfig", {}).get("Privileged") is False,
     }
     measured_controls = (value for key, value in coverage.items()
-                         if key not in ("metadataDenied", "azurePlatformDenied"))
+                         if key not in ("metadataDenied", "azurePlatformDenied", "providerRouteDenied"))
     passed = all(measured_controls)
     return {"passed": passed, "status": "passed" if passed else "failed",
-            "runtime": "openshell", "profile": "owned-demo-v1",
+            "runtime": "openshell", "profile": "owned-demo-openshell-proxy-v1",
             "checkedAt": time.time(), "network": config["network"],
             "networkId": network_info["Id"], "bridgeGateway": gateway,
             "bridgeSubnet": expected_subnet,
             "imageDigest": image_digest, "sandbox": sandbox, "sandboxId": sandbox_id,
-            "paymentHost": config["paymentHost"], "otherPaymentHost": config["otherPaymentHost"],
+            "paymentHost": config["paymentHost"], "paymentIp": config["paymentIp"],
+            "paymentContainerId": config["paymentContainerId"],
+            "paymentImageDigest": config["paymentImageDigest"],
+            "paymentEnvironmentId": config["paymentEnvironmentId"],
+            "sourceRunId": config["sourceRunId"],
+            "otherPaymentHost": config["otherPaymentHost"],
+            "otherPaymentIp": config["otherPaymentIp"],
+            "otherPaymentContainerId": config["otherPaymentContainerId"],
+            "otherPaymentImageDigest": config["otherPaymentImageDigest"],
+            "otherPaymentEnvironmentId": config["otherPaymentEnvironmentId"],
             "externalProbeUrl": OWNED_PUBLIC_HEALTH_URL,
-            "hostChecks": {"external": public_target_check,
-                           "hostGateway": host_gateway_check,
-                           "verifier": host_verifier_check},
+            "firewallProof": {"chain": "DOCKER-INTERNAL", "rule": firewall_rule,
+                              "bridgeInterface": bridge, "passed": forwarding_denied,
+                              "input": {"chain": "INPUT", "position": 1,
+                                        "source": "10.200.0.0/24", "destination": "172.30.0.1/32",
+                                        "port": 8000, "action": "REJECT tcp-reset",
+                                        "counterBefore": input_before, "counterAfter": input_after,
+                                        "counterDelta": input_after - input_before},
+                              "chainSha256": hashlib.sha256(json.dumps(
+                                  chains, sort_keys=True, separators=(",", ":")).encode()).hexdigest()},
+            "hostChecks": {"externalBefore": public_target_check,
+                           "externalAfter": public_target_after,
+                           "hostGatewayBefore": host_gateway_check,
+                           "hostGatewayAfter": host_gateway_after,
+                           "verifierBefore": host_verifier_check,
+                           "verifierAfter": host_verifier_after,
+                           "otherPaymentBefore": sibling_host_check,
+                           "otherPaymentAfter": sibling_host_after},
             "routeProof": route,
             **policy_binding, "policyEffectiveHash": policy_effective_hash,
             "probes": probes, "filesystemProbe": fs.stdout.strip(), "coverage": coverage,
-            "unmeasuredControls": ["metadataDenied", "azurePlatformDenied"],
+            "unmeasuredControls": ["metadataDenied", "azurePlatformDenied", "providerRouteDenied"],
             "filesystemLimitations": ["/tmp, /dev/null and /dev/pts are writable for SDK operation",
                                       "The negative write probe measured /etc/passwd only",
-                                      "Provider endpoints were not contacted; only static route isolation was measured."]}
+                                      "Provider endpoints were not contacted; nested default reaches the supervisor.",
+                                      "Host bridge model route is allowed only for two POST paths by effective policy."]}
 
 
 def main() -> int:

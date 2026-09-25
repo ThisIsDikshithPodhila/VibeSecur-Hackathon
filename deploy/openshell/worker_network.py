@@ -13,10 +13,14 @@ import re
 import subprocess
 import sys
 
+from deploy.repair.route_proof import route_proof
+
 
 NAME = "vibesecur-worker-internal"
 SUBNET = "172.30.0.0/24"
 GATEWAY = "172.30.0.1"
+SUPERVISOR_SUBNET = "10.200.0.0/24"
+SUPERVISOR_GATEWAY = "10.200.0.1"
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -46,6 +50,74 @@ def validate_attachment(container: dict, network_id: str) -> None:
             or set(networks) != {NAME}
             or endpoint.get("NetworkID") != network_id):
         raise ValueError("OpenShell sandbox attached to a different network")
+
+
+def nested_route_proof(ipv4_text: str, ipv6_text: str) -> dict:
+    """Attest the pinned OpenShell proxy veth, without claiming no default.
+
+    The nested default reaches only the supervisor. The host Docker bridge
+    rule and direct owned-endpoint probe establish outer forwarding denial.
+    """
+    route = route_proof(ipv4_text, ipv6_text, SUPERVISOR_SUBNET)
+    rows = route.get("ipv4Routes") or []
+    defaults = [row for row in rows if row.get("destination") == "0.0.0.0/0"]
+    connected = [row for row in rows if row.get("destination") == SUPERVISOR_SUBNET]
+    interface = defaults[0].get("interface") if len(defaults) == 1 else None
+    nested = ("parseError" not in route and len(rows) == 2
+              and len(defaults) == len(connected) == 1
+              and isinstance(interface, str) and interface.startswith("veth-s-")
+              and connected[0].get("interface") == interface
+              and defaults[0].get("gateway") == SUPERVISOR_GATEWAY
+              and connected[0].get("gateway") == "0.0.0.0"
+              and all((row.get("disposition") == "reject" or
+                       (row.get("gateway") == "::" and
+                        (ipaddress.IPv6Network(row["destination"]).subnet_of(
+                            ipaddress.IPv6Network("fe80::/10")) or
+                         ipaddress.IPv6Network(row["destination"]).subnet_of(
+                            ipaddress.IPv6Network("ff00::/8")) or
+                         row.get("destination") == "::1/128")))
+                      for row in route.get("ipv6Routes", [])))
+    route["nestedDefaultViaSupervisor"] = nested
+    route["supervisorInterface"] = interface
+    route["providerRouteDenied"] = None
+    return route
+
+
+def effective_forwarding_denial(chains: dict[str, str], bridge: str) -> bool:
+    """Require Docker's actual rule order to drop worker bridge egress.
+
+    The only earlier FORWARD jump may be Docker's conntrack chain, whose
+    established-return rules must match output to a bridge, never input from
+    this worker bridge. DOCKER-USER must be empty.
+    """
+    if not re.fullmatch(r"br-[0-9a-f]{12}", bridge):
+        return False
+    required = {"FORWARD", "DOCKER-USER", "DOCKER-FORWARD", "DOCKER-CT", "DOCKER-INTERNAL"}
+    if set(chains) != required:
+        return False
+    lines = {name: [line.strip() for line in chains[name].splitlines() if line.strip()]
+             for name in required}
+    if ("-P FORWARD DROP" not in lines["FORWARD"]
+            or [line for line in lines["FORWARD"] if line.startswith("-A ")][:2] !=
+            ["-A FORWARD -j DOCKER-USER", "-A FORWARD -j DOCKER-FORWARD"]
+            or any(line.startswith("-A ") for line in lines["DOCKER-USER"])):
+        return False
+    forward = [line for line in lines["DOCKER-FORWARD"] if line.startswith("-A ")]
+    if forward[:2] != ["-A DOCKER-FORWARD -j DOCKER-CT",
+                       "-A DOCKER-FORWARD -j DOCKER-INTERNAL"]:
+        return False
+    ct = [line for line in lines["DOCKER-CT"] if line.startswith("-A ")]
+    if any((" -j ACCEPT" not in line or "--ctstate RELATED,ESTABLISHED" not in line
+            or " -i " in line or " -o " not in line) for line in ct):
+        return False
+    internal = [line for line in lines["DOCKER-INTERNAL"] if line.startswith("-A ")]
+    outbound = ("-A DOCKER-INTERNAL ! -d " + SUBNET + " -i " + bridge + " -j DROP")
+    if outbound not in internal:
+        return False
+    before = internal[:internal.index(outbound)]
+    if any(not line.endswith(" -j DROP") for line in before):
+        return False
+    return True
 
 
 def main() -> int:

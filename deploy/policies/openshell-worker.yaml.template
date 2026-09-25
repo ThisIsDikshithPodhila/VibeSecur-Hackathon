@@ -9,7 +9,8 @@ network_policies:
   invoice_application:
     name: invoice-application
     endpoints:
-      - host: __PAYMENT_HOST__
+      - host: __PAYMENT_IP__
+        allowed_ips: [__PAYMENT_IP__/32]
         port: 8000
         protocol: rest
         enforcement: enforce
@@ -17,6 +18,8 @@ network_policies:
           - allow: {method: GET, path: /portal}
           - allow: {method: GET, path: /documents/invoice}
           - allow: {method: GET, path: /api/context}
+          - allow: {method: GET, path: /api/inventory}
+          - allow: {method: POST, path: /api/purchase-orders}
           - allow: {method: POST, path: /api/payments}
     binaries:
       - {path: /usr/bin/curl}
@@ -25,7 +28,8 @@ network_policies:
   model_broker:
     name: model-broker
     endpoints:
-      - host: host.openshell.internal
+      - host: 172.30.0.1
+        allowed_ips: [172.30.0.1/32]
         port: 8000
         protocol: rest
         enforcement: enforce

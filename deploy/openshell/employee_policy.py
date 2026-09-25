@@ -12,16 +12,16 @@ _PAYMENT_RULE = "          - allow: {method: POST, path: /api/payments}\n"
 _PAYMENT_ALLOW = {"allow": {"method": "POST", "path": "/api/payments"}}
 
 
-def render_turn_policy(template_path: str | Path, payment_host: str,
+def render_turn_policy(template_path: str | Path, payment_ip: str,
                        scope: str) -> tuple[str, dict]:
     """Bind the pay policy, then remove its sole payment POST for safe reads."""
     if scope not in ("read_only", "pay_approved", "clarification"):
         raise ValueError("Unsupported employee turn scope")
-    expected, _ = expected_policy(template_path, payment_host)
+    expected, _ = expected_policy(template_path, payment_ip)
     raw = Path(template_path).read_text(encoding="utf-8")
-    if raw.count("__PAYMENT_HOST__") != 1 or raw.count(_PAYMENT_RULE) != 1:
+    if raw.count("__PAYMENT_IP__") != 2 or raw.count(_PAYMENT_RULE) != 1:
         raise ValueError("Approved payment rule is not unique")
-    rendered = raw.replace("__PAYMENT_HOST__", payment_host)
+    rendered = raw.replace("__PAYMENT_IP__", payment_ip)
     if scope == "pay_approved":
         return rendered, expected
     narrowed = deepcopy(expected)
@@ -29,4 +29,8 @@ def render_turn_policy(template_path: str | Path, payment_host: str,
     if rules.count(_PAYMENT_ALLOW) != 1:
         raise ValueError("Approved payment rule is not unique")
     rules.remove(_PAYMENT_ALLOW)
+    order_allow = {"allow": {"method": "POST", "path": "/api/purchase-orders"}}
+    if order_allow in rules:
+        rules.remove(order_allow)
+    rendered = rendered.replace("          - allow: {method: POST, path: /api/purchase-orders}\n", "")
     return rendered.replace(_PAYMENT_RULE, ""), narrowed

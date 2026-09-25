@@ -145,7 +145,7 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         'model': 'VIBESECUR_WORKER_MODEL',
         'openshellCli': 'VIBESECUR_WORKER_OPENSHELL_CLI',
     }
-    if worker is None and any(os.environ.get(name) for name in worker_env.values()):
+    if worker is None and os.environ.get('VIBESECUR_EMPLOYEE_WORKER_ENABLED', '1') == '1' and any(os.environ.get(name) for name in worker_env.values()):
         if payment_gateway is None or (os.environ.get('PAYMENT_URL_TEMPLATE') and
                 not (os.environ.get('VIBESECUR_PAYMENT_IMAGE') and
                      os.environ.get('VIBESECUR_PAYMENT_NETWORK'))):
@@ -159,6 +159,8 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         from vibesecur.worker import WorkerAdapter
         worker_config = {key: os.environ[name] for key,name in worker_env.items()}
         worker_config['networkVerified'] = True
+        worker_config['paymentEndpoint'] = payment_gateway.worker_endpoint
+        worker_config['stream'] = True
         worker_config['reasoningEffort'] = os.environ.get('VIBESECUR_WORKER_REASONING', 'low')
         worker_config['leaseFactory'] = lambda task_id: security.issue_model_lease(
             task_id, worker_config['model'].removeprefix('openai/'), ttl=600,

@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep VibeSecur boundary admission evidence current
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=15min
+Persistent=true
+[Install]
+WantedBy=timers.target

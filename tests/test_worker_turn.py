@@ -16,18 +16,20 @@ from worker_runtime.run import assistant_text_from_event, turn_activity_from_eve
 from vibesecur.worker import WorkerAdapter, _presenter_worker_event
 
 
-def test_read_only_policy_is_exact_measured_pay_policy_minus_one_post():
+def test_read_only_policy_excludes_payment_and_purchase_order_writes():
     from deploy.openshell.employee_policy import render_turn_policy
 
     template = Path("deploy/policies/openshell-worker.yaml.template")
-    host = "payment-env-protected"
+    host = "172.30.0.3"
     pay_yaml, pay = render_turn_policy(template, host, "pay_approved")
     read_yaml, read = render_turn_policy(template, host, "read_only")
     assert pay_yaml.count("allow: {method: POST, path: /api/payments}") == 1
     assert "allow: {method: POST, path: /api/payments}" not in read_yaml
     expected_rules = pay["network_policies"]["invoice_application"]["endpoints"][0]["rules"]
     read_rules = read["network_policies"]["invoice_application"]["endpoints"][0]["rules"]
-    assert len(expected_rules) == len(read_rules) + 1
+    assert len(expected_rules) == len(read_rules) + 2
+    assert all(rule["allow"]["method"] == "GET" for rule in read_rules)
+    assert {"allow": {"method": "GET", "path": "/api/inventory"}} in read_rules
     assert {"allow": {"method": "POST", "path": "/api/payments"}} not in read_rules
     with pytest.raises(ValueError, match="scope"):
         render_turn_policy(template, host, "pending")
@@ -263,6 +265,7 @@ def test_turn_cleanup_timeout_finalizes_failed_and_fences_next_turn(monkeypatch,
     adapter._lock = __import__("threading").Lock()
     adapter._jobs = {}
     monkeypatch.setattr(adapter, "_ensure_conversation_volume", lambda *_: "named-volume")
+    monkeypatch.setattr(adapter, "_payment_endpoint", lambda _run, arm: {"ip": "172.30.0.3" if arm == "protected" else "172.30.0.4", "url": "http://172.30.0.3:8000" if arm == "protected" else "http://172.30.0.4:8000"})
     monkeypatch.setattr(adapter, "_remove_container", lambda *_: (_ for _ in ()).throw(
         subprocess.TimeoutExpired("sandbox delete", 20)))
 
