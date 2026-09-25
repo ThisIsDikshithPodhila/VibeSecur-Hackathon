@@ -272,8 +272,10 @@ class Controller:
                 if kind == 'worker.started' and isinstance(event.get('jobId'), str):
                     self.store.update_run(run_id, conversationJob={
                         'turnId': turn_id, 'jobId': event['jobId'], 'taskId': task_id})
-                    self.store.append_event(run_id, 'worker.started',
-                                            {'turnId': turn_id, 'jobId': event['jobId']})
+                    started = {'turnId': turn_id, 'jobId': event['jobId']}
+                    if event.get('boundary') in ('unmeasured_local_docker',):
+                        started['boundary'] = event['boundary']
+                    self.store.append_event(run_id, 'worker.started', started)
                 elif kind == 'worker.activity':
                     data = event.get('payload') if isinstance(event.get('payload'), dict) else event
                     if (data.get('turnId') == turn_id and data.get('tool') in

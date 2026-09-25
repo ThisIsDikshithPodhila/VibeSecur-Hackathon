@@ -279,3 +279,13 @@
   .cp-what-happened .cp-payment-comparison strong { font-size: 15px; }
   .cp-hero .cp-impact { flex-direction: column; gap: 12px; }
 }
+.cp-course-corrections { margin-block: 24px; padding: 16px 20px; border: 1px solid var(--cp-line); border-radius: 12px; }
+.cp-course-corrections h2 { font-size: 16px; margin-block-end: 8px; }
+.cp-correction { display: flex; gap: 12px; align-items: flex-start; padding-block: 8px; }
+.cp-correction p { margin: 2px 0; }
+.cp-code-investigation { margin-block: 20px; }
+.cp-citations { list-style: none; padding: 0; display: grid; gap: 8px; }
+.cp-citations li { display: grid; gap: 4px; }
+.cp-citations li > span { font-size: 11px; font-weight: 600; }
+.cp-citations li[data-verified="false"] > span { color: #b42318; }
+.cp-citations pre, .cp-patch { margin: 0; padding: 8px; overflow-x: auto; font-size: 12px; background: rgba(0,0,0,.04); border-radius: 6px; white-space: pre; }
