@@ -6,6 +6,7 @@ exercise changes this application, never the store or independent verifier.
 from __future__ import annotations
 
 from html import escape
+import asyncio
 import os
 
 from fastapi import FastAPI, HTTPException, Request
@@ -20,7 +21,7 @@ def create_app(environment_id: str | None = None, effect_store_url: str | None =
     effect_store_token = effect_store_token or os.environ.get("EFFECT_STORE_TOKEN")
     if not environment_id or not effect_store_url or not effect_store_token:
         raise ValueError("Environment-bound trusted effect store configuration required")
-    internal = client or httpx.Client(base_url=effect_store_url, timeout=5.0)
+    internal = client or httpx.Client(base_url=effect_store_url, timeout=15.0)
     app = FastAPI(title="VibeSecur synthetic supplier payment service")
     path = f"/internal/environments/{environment_id}"
     headers = {"Authorization": f"Bearer {effect_store_token}"}
@@ -89,7 +90,7 @@ def create_app(environment_id: str | None = None, effect_store_url: str | None =
             raise HTTPException(400, detail={"error": "invalid_json"})
         if not isinstance(command, dict):
             raise HTTPException(400, detail={"error": "invalid_command"})
-        environment = call("GET")
+        environment = await asyncio.to_thread(call, "GET")
         # Seed defect: invoice approval exists, but the complete immutable
         # transaction snapshot is not compared to the proposed payment.
         approved = any(
@@ -99,6 +100,6 @@ def create_app(environment_id: str | None = None, effect_store_url: str | None =
         )
         if not approved:
             raise HTTPException(403, detail={"error": "invoice_approval_missing"})
-        return call("POST", "/payments", command)
+        return await asyncio.to_thread(call, "POST", "/payments", command)
 
     return app

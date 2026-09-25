@@ -16,7 +16,7 @@ import time
 from vibesecur.repair import prepare_candidate, validate_patch
 
 
-BASE = '25ef1da2694f482bfc98e7ee7df0f7f0c714c8f0'
+BASE = '9e161acb3609e55a8e3823deaf29e29b81f60c90'
 BASE_IMAGE = 'sha256:01910ba6d1a5dc0a8fac9b62a8985ca24651098fb597b8074277c4888da22f91'
 PATCH = Path('/srv/vibesecur/data/artifacts/93daf47ad072432cb539c49d7864147f/patch.diff')
 PATCH_SHA = '6bf95a3cc990fa5d7ba0ca77a6501faeb5416427c0e4ab43433d55cdd02f3a08'

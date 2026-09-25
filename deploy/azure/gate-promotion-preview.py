@@ -10,7 +10,7 @@ import tempfile
 from vibesecur.repair import prepare_candidate
 
 
-BASE = "25ef1da2694f482bfc98e7ee7df0f7f0c714c8f0"
+BASE = "9e161acb3609e55a8e3823deaf29e29b81f60c90"
 BASE_IMAGE = "sha256:01910ba6d1a5dc0a8fac9b62a8985ca24651098fb597b8074277c4888da22f91"
 PATCH = Path("/srv/vibesecur/data/artifacts/dc56fa6f46034395a203d510179ca7ad/patch.diff")
 EXPECTED_SOURCE = "117259a70c41a35b05e6d0f6e99ca53ac464a1b047be00d71f289cb06f353462"

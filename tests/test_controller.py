@@ -667,10 +667,10 @@ def test_azure_investigator_uses_task_lease_through_broker():
 def test_pinned_seed_source_inspection_supports_confirmed_cause():
     from vibesecur.investigation import inspect_seed_source
     root=pathlib.Path(__file__).resolve().parents[1]
-    result=inspect_seed_source(root,'25ef1da2694f482bfc98e7ee7df0f7f0c714c8f0')
+    result=inspect_seed_source(root,'9e161acb3609e55a8e3823deaf29e29b81f60c90')
     assert result['status']=='confirmed_seed_defect'
     assert result['sourceSha256']
-    assert result['baseCommit']=='25ef1da2694f482bfc98e7ee7df0f7f0c714c8f0'
+    assert result['baseCommit']=='9e161acb3609e55a8e3823deaf29e29b81f60c90'
 
 
 def test_missing_source_inspection_keeps_cause_unconfirmed():
@@ -688,7 +688,7 @@ def test_controller_report_cites_pinned_source_and_reproducer():
     with tempfile.TemporaryDirectory() as directory:
         app=create_app(data_dir=directory,access_code='test-presenter-code',public_origin='http://testserver',
                        repair_config={'repoPath':str(root),
-                                      'baseCommit':'25ef1da2694f482bfc98e7ee7df0f7f0c714c8f0'})
+                                      'baseCommit':'9e161acb3609e55a8e3823deaf29e29b81f60c90'})
         with TestClient(app) as client:
             rid,command=_incident(client,app)
             run=command(f'/api/runs/{rid}/commands/investigate','source-investigate',{})['run']
