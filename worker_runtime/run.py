@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -100,7 +101,8 @@ def step_detail_from_event(event_type: str, body: dict, turn_id: str) -> dict | 
         step["thought"], step["detail"] = thought.strip()[:1200], detail.strip()[:300]
     else:
         observation = body.get("observation") if isinstance(body.get("observation"), dict) else {}
-        step["result"] = _parts_text(observation.get("content")).strip()[:400]
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", _parts_text(observation.get("content")))
+        step["result"] = text.strip()[:400]
     return step
 
 
