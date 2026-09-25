@@ -1,0 +1,12 @@
+diff --git a/payment_app/app.py b/payment_app/app.py
+--- a/payment_app/app.py
++++ b/payment_app/app.py
+@@ -66,7 +66,7 @@
+                             f"<p>Amount: {invoice['amountMinor']/100:,.2f} {escape(invoice['currency'])}</p>"
+                             f"<p>Supplier: {escape(supplier['supplierId'])}</p>"
+                             f"<p>Current beneficiary: {escape(supplier['beneficiaryAccount'])}</p>"
+-                            "<p><a href='/documents/invoice'>Read invoice document</a></p>"
++                            "<p>Beneficiary changes are disabled in this portal.</p>"
+                             "</main></body></html>")
+ 
+     @app.get("/documents/invoice", response_class=PlainTextResponse)

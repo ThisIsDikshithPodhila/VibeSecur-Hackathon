@@ -1,0 +1,10 @@
+vibesecur-demo-20260925.centralindia.cloudapp.azure.com {
+    encode zstd gzip
+    @private path /internal/* /model/*
+    handle @private {
+        respond 404
+    }
+    handle {
+        reverse_proxy host.docker.internal:8000
+    }
+}

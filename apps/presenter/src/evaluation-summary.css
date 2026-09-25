@@ -1,0 +1,205 @@
+.evaluation-summary {
+  --evaluation-card: #1a1c1c;
+  --evaluation-surface: #121414;
+  --evaluation-ink: #e2e2e2;
+  --evaluation-muted: #bacbbc;
+  --evaluation-outline: #3c4a3f;
+  --evaluation-green: #44f697;
+  --evaluation-amber: #ffd0b2;
+  color: var(--evaluation-ink);
+  font-family: 'Inter Variable', Inter, system-ui, sans-serif;
+  margin: 16px 0;
+  min-width: 0;
+}
+
+.evaluation-summary__summary {
+  align-items: center;
+  background: var(--evaluation-card);
+  border: 1px solid var(--evaluation-outline);
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  justify-content: space-between;
+  min-height: 52px;
+  padding: 12px 16px 12px 40px;
+  position: relative;
+}
+
+.evaluation-summary__summary::marker {
+  content: '';
+}
+
+.evaluation-summary__summary::before {
+  border-bottom: 2px solid var(--evaluation-green);
+  border-right: 2px solid var(--evaluation-green);
+  content: '';
+  height: 7px;
+  left: 16px;
+  position: absolute;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+  width: 7px;
+}
+
+.evaluation-summary[open] .evaluation-summary__summary::before {
+  transform: rotate(45deg);
+}
+
+.evaluation-summary__summary:focus-visible {
+  outline: 2px solid var(--evaluation-green);
+  outline-offset: 2px;
+}
+
+.evaluation-summary__title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.evaluation-summary__meta {
+  color: var(--evaluation-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-transform: capitalize;
+}
+
+.evaluation-summary__content {
+  background: var(--evaluation-surface);
+  border: 1px solid var(--evaluation-outline);
+  border-radius: 8px;
+  margin-top: 8px;
+  padding: 16px;
+}
+
+.evaluation-summary__intro {
+  color: var(--evaluation-muted);
+  font-size: 14px;
+  line-height: 20px;
+  margin: 0 0 12px;
+}
+
+.evaluation-summary__table-scroll {
+  border: 1px solid var(--evaluation-outline);
+  border-radius: 6px;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+}
+
+.evaluation-summary__table-scroll:focus-visible {
+  outline: 2px solid var(--evaluation-green);
+  outline-offset: 2px;
+}
+
+.evaluation-summary__table {
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 20px;
+  min-width: 760px;
+  text-align: left;
+  width: 100%;
+}
+
+.evaluation-summary__table caption {
+  color: var(--evaluation-muted);
+  font-size: 13px;
+  padding: 12px 16px;
+  text-align: left;
+}
+
+.evaluation-summary__table th,
+.evaluation-summary__table td {
+  border-bottom: 1px solid rgba(133, 149, 135, 0.24);
+  padding: 12px 16px;
+  vertical-align: middle;
+}
+
+.evaluation-summary__table thead th {
+  background: #1e2020;
+  color: var(--evaluation-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.evaluation-summary__table tbody tr:last-child th,
+.evaluation-summary__table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.evaluation-summary__treatment {
+  color: var(--evaluation-ink);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.evaluation-summary__status {
+  background: rgba(186, 203, 188, 0.1);
+  border-radius: 999px;
+  color: var(--evaluation-muted);
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  padding: 3px 8px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.evaluation-summary__status--partial {
+  background: rgba(255, 183, 133, 0.12);
+  color: var(--evaluation-amber);
+}
+
+.evaluation-summary__limitations {
+  color: var(--evaluation-muted);
+  font-size: 14px;
+  line-height: 20px;
+  margin: 16px 0 0;
+  padding-left: 22px;
+}
+
+.evaluation-summary__limitations li + li {
+  margin-top: 6px;
+}
+
+.evaluation-summary__separate-tracks {
+  border-top: 1px solid var(--evaluation-outline);
+  color: var(--evaluation-ink);
+  font-size: 14px;
+  line-height: 20px;
+  margin: 16px 0 0;
+  padding-top: 12px;
+}
+
+@media (max-width: 560px) {
+  .evaluation-summary__summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .evaluation-summary__meta {
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .evaluation-summary__content {
+    padding: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evaluation-summary *,
+  .evaluation-summary *::before,
+  .evaluation-summary *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

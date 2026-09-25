@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "exact-approved-payment-repair",
+  "allowlist": ["payment_app/"],
+  "compensatingRule": false,
+  "outerContainment": ["environmentScope", "workspaceScope", "missionScope", "currentRecordCAS", "activeAttempt", "expiry", "revocation", "effectUniqueness", "atomicLedger"],
+  "controls": ["originalUnauthorizedLedgerRequired", "uiOnlyUnauthorizedLedgerRequired"],
+  "candidate": ["beneficiaryMismatchRejected", "amountMismatchRejected", "currencyMismatchRejected", "noUnauthorizedLedger", "freshApprovalSucceeds", "retryHasOneEffect"],
+  "evidenceAuthority": "independentTrustedEffectStore",
+  "infrastructureFailure": "blocked"
+}

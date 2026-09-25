@@ -1,0 +1,17 @@
+{
+  "limitations": [
+    "This records the digest-verified isolated candidate verifier artifact only.",
+    "It does not assert hosted deployment, service restart, or task resumption."
+  ],
+  "results": [
+    {
+      "artifactDigest": "6bf95a3cc990fa5d7ba0ca77a6501faeb5416427c0e4ab43433d55cdd02f3a08",
+      "checkId": "isolated_candidate_independent_verification",
+      "manifestPath": "artifacts/gates/verifier-codex-candidate-passed-2ce21ae6/manifest.json",
+      "status": "passed"
+    }
+  ],
+  "schemaVersion": "vibesecur.repair-verification-report.v1",
+  "status": "passed",
+  "verifier": "independent verifier"
+}

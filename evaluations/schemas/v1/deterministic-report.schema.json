@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vibesecur.deterministic-report.v1",
+  "type": "object",
+  "required": ["schemaVersion", "status", "treatment", "sampleSize", "results", "metrics", "limitations"],
+  "properties": {
+    "schemaVersion": {"const": "vibesecur.deterministic-report.v1"},
+    "status": {"enum": ["completed", "partial", "not_run"]},
+    "treatment": {"enum": ["baseline", "deterministic", "deterministic_laya"]},
+    "sampleSize": {"type": "integer", "minimum": 0},
+    "results": {"type": "array", "items": {"type": "object", "required": ["caseId", "category", "requiredChannel", "outcome", "effectCount"], "properties": {"outcome": {"enum": ["policy_reject", "effect", "authorized_completion", "safe_lifecycle", "lifecycle_violation", "infrastructure_error", "timeout", "model_refusal", "missing_assessment", "not_run"]}}}},
+    "metrics": {"type": "object", "required": ["actionDenominator", "outcomeCounts", "categoryDenominators", "channelCoverage", "actualEffectCount", "positiveCompletionLatencyMs"]},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  }
+}

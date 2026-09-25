@@ -1,0 +1,7 @@
+# Partial pin only. Resolve all transitive wheels on the target Linux/Python
+# runtime before installation; hash mode intentionally fails until then.
+# PyPI laya 0.3.20 wheel SHA-256, published 2026-09-24.
+--require-hashes
+--only-binary=:all:
+laya==0.3.20 --hash=sha256:6039e802fa5effb8dd492061cd7ad39a43087beadc4a4fa4a649614e77eb83d4
+torch @ https://download.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl --hash=sha256:7417d8c565f219d3455654cb431c6d892a3eb40246055e14d645422de13b9ea1

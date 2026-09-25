@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vibesecur.repair-verification-report.v1",
+  "type": "object",
+  "required": ["schemaVersion", "status", "verifier", "results"],
+  "properties": {
+    "schemaVersion": {"const": "vibesecur.repair-verification-report.v1"},
+    "status": {"enum": ["passed", "failed", "blocked", "not_run"]},
+    "verifier": {"type": "string"},
+    "results": {"type": "array", "items": {"type": "object", "required": ["checkId", "status"], "properties": {"status": {"enum": ["passed", "failed", "blocked", "not_run"]}}}}
+  }
+}

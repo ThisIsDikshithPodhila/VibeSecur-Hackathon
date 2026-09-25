@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "vibesecur.evaluation-config.v1",
+  "treatment": "baseline",
+  "adapter": "evaluations.adapters.store_payment"
+}

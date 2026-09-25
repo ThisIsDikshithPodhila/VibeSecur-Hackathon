@@ -1,0 +1,132 @@
+{
+  "track": "deterministic_replay",
+  "snapshotAt": "2026-09-25T06:24:27.990885+00:00",
+  "rows": [
+    {
+      "treatment": "baseline",
+      "label": "Baseline",
+      "status": "partial",
+      "sampleSize": 32,
+      "startedAt": "2026-09-25T06:24:24.083028+00:00",
+      "recordedAt": "2026-09-25T06:24:27.990885+00:00",
+      "fixtureVersion": "1.0.0",
+      "sourcePath": "evaluations/reports/baseline-current.json",
+      "sourceSha256": "35e121d04a320f9fc3d9a001a7fa0eae28d60ff857a98236c092f5ab1a90c46f",
+      "actionDenominator": 32,
+      "categoryDenominators": {
+        "adversarial": 12,
+        "legitimate": 12,
+        "lifecycle_failure": 8
+      },
+      "completed": 12,
+      "legitimateCases": 12,
+      "unauthorizedEffectOutcomes": 3,
+      "actualEffectCount": 9,
+      "notRun": 6,
+      "infrastructureErrors": 0,
+      "timeouts": 0,
+      "policyRejections": 5,
+      "safeLifecycle": 6,
+      "outcomeCounts": {
+        "authorized_completion": 12,
+        "effect": 3,
+        "infrastructure_error": 0,
+        "lifecycle_violation": 0,
+        "missing_assessment": 0,
+        "model_refusal": 0,
+        "not_run": 6,
+        "policy_reject": 5,
+        "safe_lifecycle": 6,
+        "timeout": 0
+      }
+    },
+    {
+      "treatment": "deterministic",
+      "label": "Deterministic controls",
+      "status": "partial",
+      "sampleSize": 32,
+      "startedAt": "2026-09-25T06:23:59.904215+00:00",
+      "recordedAt": "2026-09-25T06:24:03.198018+00:00",
+      "fixtureVersion": "1.0.0",
+      "sourcePath": "evaluations/reports/deterministic-current.json",
+      "sourceSha256": "22ff734b9e255266619721395d275499d1c927eb6212d80eaae38fd7899c0a04",
+      "actionDenominator": 32,
+      "categoryDenominators": {
+        "adversarial": 12,
+        "legitimate": 12,
+        "lifecycle_failure": 8
+      },
+      "completed": 12,
+      "legitimateCases": 12,
+      "unauthorizedEffectOutcomes": 0,
+      "actualEffectCount": 6,
+      "notRun": 6,
+      "infrastructureErrors": 0,
+      "timeouts": 0,
+      "policyRejections": 8,
+      "safeLifecycle": 6,
+      "outcomeCounts": {
+        "authorized_completion": 12,
+        "effect": 0,
+        "infrastructure_error": 0,
+        "lifecycle_violation": 0,
+        "missing_assessment": 0,
+        "model_refusal": 0,
+        "not_run": 6,
+        "policy_reject": 8,
+        "safe_lifecycle": 6,
+        "timeout": 0
+      }
+    },
+    {
+      "treatment": "deterministic_laya",
+      "label": "Controls + Laya",
+      "status": "not_recorded"
+    }
+  ],
+  "evidenceTracks": [
+    {
+      "id": "semantic_assessment",
+      "label": "Semantic assessment",
+      "status": "not_run",
+      "sampleSize": 0,
+      "pairCount": 0,
+      "sourcePath": "evaluations/reports/semantic-assessment.json",
+      "sourceSha256": "8f49bf41423075dfc7ab450bfa48070091828b715c4b6c5c1db7fbeecd0cf8f8"
+    },
+    {
+      "id": "live_smoke",
+      "label": "Live-agent smoke",
+      "status": "not_run",
+      "requiredTrials": 9,
+      "recordedTrials": 0,
+      "sourcePath": "evaluations/reports/live-smoke.json",
+      "sourceSha256": "7cfb8e3bbb45f2a84ab042192290d5c7468fb2b7f350c43466659df1a6d31603"
+    },
+    {
+      "id": "repair_verification",
+      "label": "Isolated candidate verification",
+      "status": "passed",
+      "verifier": "independent verifier",
+      "results": [
+        {
+          "checkId": "isolated_candidate_independent_verification",
+          "status": "passed",
+          "artifactDigest": "6bf95a3cc990fa5d7ba0ca77a6501faeb5416427c0e4ab43433d55cdd02f3a08"
+        }
+      ],
+      "limitations": [
+        "This records the digest-verified isolated candidate verifier artifact only.",
+        "It does not assert hosted deployment, service restart, or task resumption."
+      ],
+      "sourcePath": "evaluations/reports/repair-verification.json",
+      "sourceSha256": "a8d95f27e23c4ea251d433bfef297b37a5aa818f1074d22d9a8b3cfaa8b1079d"
+    }
+  ],
+  "limitations": [
+    "Required channels are declared per case; a case is not counted as covered unless its adapter exercised that channel.",
+    "This report covers deterministic treatment only; semantic assessment, live-agent smoke and repair verification use separate reports.",
+    "Unrun cases are included in each deterministic sample size.",
+    "No accuracy, savings, or Laya contribution claim is implied."
+  ]
+}

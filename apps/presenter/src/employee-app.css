@@ -1,0 +1,68 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  color: #17212b;
+  background: #f7f8fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+* { box-sizing: border-box; }
+body { min-width: 320px; margin: 0; }
+button, input, textarea, select { font: inherit; }
+button { cursor: pointer; touch-action: manipulation; }
+button:disabled { cursor: not-allowed; opacity: .55; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid #2657c7;
+  outline-offset: 3px;
+}
+h1, h2, h3, p, dl, dd { margin-top: 0; }
+
+.employee-brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  color: #fff;
+  background: #2c58c8;
+  border-radius: 11px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -.05em;
+}
+.employee-loading { min-height: 100svh; display: grid; align-content: center; justify-items: center; gap: 12px; padding: 28px; text-align: center; }
+.employee-loading p { margin: 8px 0 0; font-size: 16px; font-weight: 600; }
+.employee-loading small { color: #687384; font-size: 13px; line-height: 1.5; }
+.employee-login { min-height: 100svh; display: flex; flex-direction: column; background: #fff; }
+.employee-login-brand { display: flex; align-items: center; gap: 11px; height: 76px; padding: 0 max(28px, calc((100vw - 1340px)/2)); border-bottom: 1px solid #e5e8ed; }
+.employee-login-brand strong { font-size: 19px; letter-spacing: -.035em; }
+.employee-login-card { width: min(100% - 40px, 460px); margin: auto; padding: 32px 0 80px; }
+.employee-login-avatar { display: grid; place-items: center; width: 54px; height: 54px; margin-bottom: 24px; border-radius: 50%; background: #edf2ff; color: #2657c7; font-size: 24px; font-weight: 650; }
+.employee-login-eyebrow { margin-bottom: 8px; color: #566d9b; font-size: 13px; font-weight: 600; }
+.employee-login-card h1 { margin-bottom: 13px; color: #17212b; font-size: clamp(34px, 5vw, 46px); line-height: 1.12; letter-spacing: -.045em; }
+.employee-login-card > p:not(.employee-login-eyebrow):not(.employee-login-footnote):not(.employee-login-error) { margin-bottom: 28px; color: #667487; font-size: 16px; line-height: 1.6; }
+.employee-login-card form { display: grid; gap: 11px; }
+.employee-login-card label { color: #435267; font-size: 13px; font-weight: 600; }
+.employee-login-card input { width: 100%; min-height: 52px; padding: 0 14px; border: 1px solid #cbd4df; border-radius: 10px; background: #fff; color: #17212b; font-size: 15px; }
+.employee-login-card form button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 50px; margin-top: 5px; border: 1px solid #253549; border-radius: 10px; background: #253549; color: #fff; font-size: 14px; font-weight: 600; }
+.employee-login-card form button:hover:not(:disabled) { background: #354b64; }
+.employee-login-footnote { display: flex; align-items: center; gap: 8px; margin-top: 23px; color: #798595; font-size: 12px; }
+.employee-login-error { margin: 15px 0 0; padding: 12px 14px; border: 1px solid #e7bdbf; border-radius: 8px; background: #fff4f4; color: #a2212b; font-size: 13px; }
+
+.employee-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: rgb(22 31 43 / 48%); }
+.employee-dialog { width: min(100%, 480px); padding: 28px; border: 1px solid #dce1e7; border-radius: 14px; background: #fff; box-shadow: 0 20px 70px rgb(15 30 50 / 16%); }
+.employee-dialog > svg { color: #6a7484; }
+.employee-dialog h2 { margin: 12px 0 9px; font-size: 22px; letter-spacing: -.025em; }
+.employee-dialog p { color: #647184; font-size: 14px; line-height: 1.6; }
+.employee-dialog > div { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
+.employee-dialog button { min-height: 44px; padding: 0 14px; border: 1px solid #d1d9e1; border-radius: 8px; background: #fff; color: #374659; font-size: 13px; font-weight: 600; }
+.employee-dialog button.is-primary { border-color: #253549; background: #253549; color: #fff; }
+@media (max-width: 520px) {
+  .employee-login-brand { padding-inline: 20px; }
+  .employee-login-card { padding-bottom: 32px; }
+  .employee-dialog { padding: 22px; }
+  .employee-dialog > div { flex-direction: column-reverse; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

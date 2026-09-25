@@ -1,0 +1,30 @@
+{
+  "name": "vibesecur-presenter",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test:browser": "node ../../scripts/tablet_check.mjs"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "0.15.22",
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@xyflow/react": "12.12.0",
+    "lucide-react": "^0.468.0",
+    "motion": "13.4.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

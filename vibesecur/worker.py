@@ -1,0 +1,1517 @@
+"""Trusted HTTP payment gateway and host-launched, contained OpenHands adapter.
+
+Worker JSONL is an observation, never a trusted payment receipt or verdict.
+"""
+from __future__ import annotations
+
+import json
+import hashlib
+import ipaddress
+import os
+from pathlib import Path
+import re
+import selectors
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, build_opener, ProxyHandler
+from uuid import UUID, uuid4
+
+import httpx
+
+from deploy.openshell.policy_binding import expected_policy, effective_policy
+from deploy.openshell.employee_policy import render_turn_policy
+from deploy.openshell.worker_network import NAME as WORKER_NETWORK_NAME
+from deploy.openshell.worker_network import GATEWAY as WORKER_BRIDGE_GATEWAY
+from deploy.openshell.worker_network import SUBNET as WORKER_BRIDGE_SUBNET
+from deploy.openshell.worker_network import validate as validate_worker_network
+from deploy.openshell.worker_network import validate_attachment as validate_worker_attachment
+
+
+_ENV_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,79}$")
+_IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+_JOB_ID = re.compile(r"^worker-[0-9a-f]{32}$")
+_RUN_ID = re.compile(r"^run-[0-9a-f]{32}$")
+_VOLUME_LABELS = ("openshell.ai/sandbox-attachable", "openshell.ai/sandbox-attachable-workspace",
+                  "vibesecur.run-id", "vibesecur.conversation-id")
+
+
+def _presenter_worker_event(event: dict) -> dict | None:
+    # Worker stdout is untrusted. Full SDK bodies stay in the private artifact;
+    # the presenter receives only canonical tool metadata or fixed error codes.
+    kind = event.get("kind")
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if kind == "worker.activity":
+        labels = {"browser": "Browser action", "terminal": "Terminal action",
+                  "file_editor": "File editor action"}
+        tool, status = payload.get("tool"), payload.get("status")
+        if tool not in labels or status not in ("started", "succeeded", "failed"):
+            return None
+        clean = {"tool": tool, "status": status, "label": labels[tool]}
+        turn_id = payload.get("turnId")
+        if turn_id is not None:
+            try:
+                if not isinstance(turn_id, str) or str(UUID(turn_id)) != turn_id:
+                    return None
+            except ValueError:
+                return None
+            clean["turnId"] = turn_id
+            call_id = payload.get("toolCallId")
+            if (not isinstance(call_id, str) or not 1 <= len(call_id) <= 128
+                    or not call_id.isprintable()):
+                return None
+            clean["toolCallId"] = call_id
+            clean["title"] = labels[tool]
+            verb = {"started": "started", "succeeded": "completed",
+                    "failed": "failed"}[status]
+            clean["description"] = labels[tool].replace(" action", " tool call") + " " + verb
+    elif kind == "worker.assistant":
+        text, turn_id, sdk_id = payload.get("text"), payload.get("turnId"), payload.get("sdkEventId")
+        if (not isinstance(text, str) or not text.strip() or len(text) > 8192 or
+                not isinstance(turn_id, str) or not isinstance(sdk_id, str) or
+                not 1 <= len(sdk_id) <= 128 or not sdk_id.isprintable()):
+            return None
+        try:
+            if str(UUID(turn_id)) != turn_id:
+                return None
+        except ValueError:
+            return None
+        clean = {"text": text, "turnId": turn_id, "sdkEventId": sdk_id}
+    elif kind == "worker.sdk_error":
+        error_type = payload.get("errorType")
+        if not isinstance(error_type, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type):
+            return None
+        clean = {"errorType": error_type}
+        if "turnId" in payload:
+            turn_id = payload["turnId"]
+            try:
+                if not isinstance(turn_id, str) or str(UUID(turn_id)) != turn_id:
+                    return None
+            except ValueError:
+                return None
+            clean["turnId"] = turn_id
+    elif kind == "worker.configuration_error":
+        if payload.get("error") not in ("mission_fields_missing", "invalid_reasoning_effort",
+                                         "unknown_scenario"):
+            return None
+        clean = {"error": payload["error"]}
+    else:
+        return None
+    return {"kind": kind, "source": "host_filtered_openhands", "at": time.time(),
+            "payload": clean}
+
+
+def _worker_scenario(run: dict) -> str:
+    value = run.get("workerScenario", "approved_invoice")
+    if value not in ("approved_invoice", "directed_synthetic_fixture"):
+        raise ValueError("Unknown synthetic worker scenario")
+    return value
+
+
+class PromotionError(RuntimeError):
+    """Fixed, non-sensitive stage for a failed trusted promotion operation."""
+
+    def __init__(self, stage: str):
+        if stage != "image_build":
+            raise ValueError("Unknown promotion stage")
+        self.stage = stage
+        super().__init__("Payment promotion failed at " + stage)
+
+
+def _image_digest(image: str) -> str:
+    """Accept either a registry digest or an immutable local Docker image ID."""
+    digest = image.split("@", 1)[1] if "@sha256:" in image else image
+    if not _IMAGE_ID.fullmatch(digest):
+        raise ValueError("Worker image must be pinned by SHA-256 digest")
+    return digest
+
+
+class PaymentGateway:
+    """Call independent environment-bound payment services over real HTTP."""
+
+    def __init__(self, url_template: str, *, timeout: float = 8.0, provisioner=None):
+        if url_template.count("{environmentId}") != 1:
+            raise ValueError("Payment URL must include one environmentId placeholder")
+        sample = url_template.replace("{environmentId}", "env-1")
+        parsed = urlparse(sample)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Payment URL must be HTTP(S) without user info")
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise ValueError("Payment URL must be an origin")
+        self.url_template = url_template.rstrip("/")
+        self.timeout = timeout
+        self.provisioner = provisioner
+
+    def _url(self, run: dict, environment: str) -> str:
+        if environment not in ("baseline", "protected"):
+            raise ValueError("Unknown payment environment")
+        environment_id = run[environment]["environmentId"]
+        if not isinstance(environment_id, str) or not _ENV_ID.fullmatch(environment_id):
+            raise ValueError("Invalid environment ID")
+        origin = (self.provisioner.host_origin(run, environment) if self.provisioner
+                  else self.url_template.replace("{environmentId}", environment_id))
+        return origin + "/api/payments"
+
+    @staticmethod
+    def _body(response) -> dict:
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            return {"error": "invalid_payment_response"}
+        return body if isinstance(body, dict) else {"error": "invalid_payment_response"}
+
+    def pay(self, run: dict, environment: str, command: dict, client: str = "http") -> dict:
+        try:
+            url = self._url(run, environment)
+            response = httpx.post(url, json=command, timeout=self.timeout, trust_env=False)
+        except (httpx.RequestError, RuntimeError, ValueError, KeyError, TypeError,
+                OSError, subprocess.SubprocessError) as exc:
+            return {"status": "transport_error", "httpStatus": None,
+                    "body": {"error": type(exc).__name__}, "client": client}
+        return {"status": "response", "httpStatus": response.status_code,
+                "body": self._body(response), "client": client}
+
+    def document(self, run: dict, environment: str) -> dict:
+        """Read the untrusted invoice document from the same real service."""
+        try:
+            url = self._url(run, environment).removesuffix("/api/payments") + "/documents/invoice"
+            response = httpx.get(url, timeout=self.timeout, trust_env=False)
+        except (httpx.RequestError, RuntimeError, ValueError, KeyError, TypeError,
+                OSError, subprocess.SubprocessError) as exc:
+            return {"status": "transport_error", "httpStatus": None,
+                    "body": "", "error": type(exc).__name__, "transport": "separate_http",
+                    "truncated": None}
+        full_text = response.text
+        return {"status": "response", "httpStatus": response.status_code,
+                "body": full_text[:16384], "transport": "separate_http",
+                "truncated": len(full_text) > 16384,
+                "bodyLengthChars": len(full_text),
+                "bodyLengthBytes": len(response.content),
+                "bodySha256": hashlib.sha256(response.content).hexdigest()}
+
+    def pay_alternate(self, run: dict, environment: str, command: dict) -> dict:
+        """Exercise the same payment API with an independent stdlib HTTP client."""
+        data = json.dumps(command, separators=(",", ":")).encode("utf-8")
+        try:
+            url = self._url(run, environment)
+            request = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+            with build_opener(ProxyHandler({})).open(request, timeout=self.timeout) as response:
+                status, payload = response.status, response.read(65537)
+        except HTTPError as exc:
+            status, payload = exc.code, exc.read(65537)
+        except (URLError, TimeoutError, OSError, RuntimeError, ValueError, KeyError, TypeError,
+                subprocess.SubprocessError) as exc:
+            return {"status": "transport_error", "httpStatus": None,
+                    "body": {"error": type(exc).__name__}, "client": "stdlib_http"}
+        try:
+            body = json.loads(payload) if len(payload) <= 65536 else {"error": "response_too_large"}
+        except ValueError:
+            body = {"error": "invalid_payment_response"}
+        if not isinstance(body, dict):
+            body = {"error": "invalid_payment_response"}
+        return {"status": "response", "httpStatus": status, "body": body, "client": "stdlib_http"}
+
+    def teardown(self, run: dict) -> None:
+        """Remove only this run's provisioned payment services, if any."""
+        if self.provisioner is not None:
+            self.provisioner.teardown(run)
+
+    def promote_verified(self, run: dict, patch_path: str, artifact_digest: str,
+                         base_commit: str) -> dict:
+        if self.provisioner is None:
+            raise RuntimeError("Separate payment service promotion is unavailable")
+        return self.provisioner.promote_verified(run, patch_path, artifact_digest, base_commit)
+
+    def probe_promoted(self, run: dict, artifact_digest: str, image_digest: str) -> dict:
+        if self.provisioner is None:
+            raise RuntimeError("Separate payment service probe is unavailable")
+        return self.provisioner.probe_promoted(run, artifact_digest, image_digest)
+
+    def profile_attestation(self, run: dict) -> dict:
+        if self.provisioner is None:
+            raise RuntimeError("Separate payment service profile attestation is unavailable")
+        return self.provisioner.profile_attestation(run)
+
+
+class PaymentServiceProvisioner:
+    """Trusted host operator for separate, environment-scoped payment containers.
+
+    The only container address exposed to the worker is the Docker DNS alias.
+    Trusted host HTTP uses the container's private bridge IP directly.
+    """
+
+    def __init__(self, config: dict, security):
+        self.image = config.get("image", "")
+        _image_digest(self.image)
+        self.network = config.get("network", "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", self.network):
+            raise ValueError("Payment network is required")
+        self.security = security
+        self.token_ttl = min(max(int(config.get("tokenTtlSeconds", 3600)), 60), 3600)
+        self.data_root = Path(config.get("dataRoot") or os.environ.get("VIBESECUR_DATA_DIR", "./data")).resolve()
+        self.promotion_root = self.data_root / "promotions"
+        repo_value = config.get("repoPath") or os.environ.get("VIBESECUR_REPAIR_REPO_PATH")
+        self.repo_path = Path(repo_value).resolve() if repo_value else None
+        profile_values = [config.get("acceptedProfilePath"), config.get("acceptedProfileSha256"),
+                          config.get("acceptedProofPath")]
+        if any(profile_values) and not all(profile_values):
+            raise ValueError("Accepted payment profile configuration is incomplete")
+        self.accepted_profile_path = Path(profile_values[0]).resolve() if all(profile_values) else None
+        self.accepted_profile_sha256 = profile_values[1] if all(profile_values) else None
+        self.accepted_proof_path = Path(profile_values[2]).resolve() if all(profile_values) else None
+        if self.accepted_profile_sha256 is not None and not re.fullmatch(
+                r"[0-9a-f]{64}", self.accepted_profile_sha256):
+            raise ValueError("Accepted payment profile digest is invalid")
+        self._lock = threading.RLock()
+        self._origins: dict[str, str] = {}
+        self._docker("image", "inspect", self.image)
+        self._docker("network", "inspect", self.network)
+
+    @staticmethod
+    def _docker(*args: str, timeout: int = 30, docker_config: str | None = None) -> str:
+        environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if docker_config is not None:
+            config_path = Path(docker_config)
+            if not config_path.is_absolute() or not config_path.is_dir():
+                raise ValueError("Docker client config must be a prepared private directory")
+            environment["DOCKER_CONFIG"] = str(config_path)
+        process = subprocess.run(["docker", *args], capture_output=True, text=True,
+                                 timeout=timeout, env=environment)
+        if process.returncode:
+            raise RuntimeError("Docker payment operation failed: " + " ".join(args[:2]))
+        return process.stdout
+
+    def _build_image(self, *args: str, docker_config: str) -> str:
+        try:
+            return self._docker("build", *args, timeout=300, docker_config=docker_config)
+        except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
+            raise PromotionError("image_build") from exc
+
+    def _manifest_path(self, run_id: str) -> Path:
+        if not re.fullmatch(r"run-[0-9a-f]{32}", run_id):
+            raise ValueError("Invalid run ID")
+        return self.promotion_root / (run_id + ".json")
+
+    def _manifest(self, run: dict) -> dict | None:
+        path = self._manifest_path(run["runId"])
+        if not path.exists():
+            return None
+        if path.is_symlink():
+            raise RuntimeError("Promotion manifest must be a regular file")
+        record = json.loads(path.read_text())
+        if (record.get("runId") != run["runId"] or
+                record.get("environmentId") != run["protected"]["environmentId"] or
+                record.get("baseImageDigest") != _image_digest(self.image) or
+                not _IMAGE_ID.fullmatch(record.get("imageDigest", "")) or
+                not re.fullmatch(r"[0-9a-f]{64}", record.get("artifactDigest", "")) or
+                not re.fullmatch(r"[0-9a-f]{64}", record.get("sourceSha256", "")) or
+                not re.fullmatch(r"[0-9a-f]{40}", record.get("baseCommit", ""))):
+            raise RuntimeError("Promotion manifest identity mismatch")
+        return record
+
+    def _expected_image(self, run: dict, environment_id: str) -> tuple[str, dict | None]:
+        manifest = self._manifest(run)
+        if run.get("paymentProfile") is not None:
+            if manifest is not None:
+                raise ValueError("Verified healthy profile cannot mix with run promotion")
+            record = self._accepted_profile(run)
+            return record["imageDigest"], record
+        if manifest and manifest["environmentId"] == environment_id:
+            return manifest["imageDigest"], manifest
+        return _image_digest(self.image), None
+
+    def _accepted_profile(self, run: dict) -> dict:
+        selector = run.get("paymentProfile")
+        if (not isinstance(selector, dict) or set(selector) != {"id", "recordSha256"}
+                or selector["id"] != "verified-healthy-v1"
+                or selector["recordSha256"] != self.accepted_profile_sha256
+                or self.accepted_profile_path is None or self.accepted_proof_path is None):
+            raise ValueError("Accepted payment profile selector mismatch")
+        if self.accepted_profile_path.is_symlink() or self.accepted_proof_path.is_symlink():
+            raise ValueError("Accepted payment profile path is not regular")
+        record_bytes = self.accepted_profile_path.read_bytes()
+        if hashlib.sha256(record_bytes).hexdigest() != self.accepted_profile_sha256:
+            raise ValueError("Accepted payment profile record changed")
+        record = json.loads(record_bytes)
+        digests = ("proofSha256", "contractDigest", "artifactDigest",
+                   "acceptanceManifestDigest", "sourceSha256")
+        if (not isinstance(record, dict) or record.get("id") != "verified-healthy-v1"
+                or record.get("version") != 1
+                or record.get("baseImageDigest") != _image_digest(self.image)
+                or not _IMAGE_ID.fullmatch(str(record.get("imageDigest", "")))
+                or not re.fullmatch(r"[0-9a-f]{40}", str(record.get("baseCommit", "")))
+                or not _RUN_ID.fullmatch(str(record.get("acceptedRunId", "")))
+                or any(not re.fullmatch(r"[0-9a-f]{64}", str(record.get(key, "")))
+                       for key in digests)):
+            raise ValueError("Accepted payment profile record invalid")
+        proof_bytes = self.accepted_proof_path.read_bytes()
+        if hashlib.sha256(proof_bytes).hexdigest() != record["proofSha256"]:
+            raise ValueError("Accepted payment profile proof changed")
+        proof = json.loads(proof_bytes)
+        if (not isinstance(proof, dict) or proof.get("passed") is not True
+                or proof.get("state") != "passed" or proof.get("outerContainment") is not True
+                or proof.get("outerControls", {}).get("passed") is not True
+                or proof.get("sourceReview", {}).get("passed") is not True
+                or proof["sourceReview"].get("sourceSha256") != record["sourceSha256"]
+                or proof.get("contractDigest") != record["contractDigest"]
+                or proof.get("artifactDigest") != record["artifactDigest"]
+                or proof.get("acceptanceManifestDigest") != record["acceptanceManifestDigest"]
+                or record["baseImageDigest"] not in (proof.get("imageIds") or {})
+                or not isinstance(proof.get("tests"), list) or not proof["tests"]
+                or any(test.get("passed") is not True for test in proof["tests"])):
+            raise ValueError("Accepted payment profile proof does not establish candidate")
+        return {**record, "recordSha256": self.accepted_profile_sha256}
+
+    def _container(self, environment_id: str, run: dict) -> str:
+        if not _ENV_ID.fullmatch(environment_id):
+            raise ValueError("Invalid environment ID")
+        run_id = run["runId"]
+        image, promotion = self._expected_image(run, environment_id)
+        name = "payment-" + environment_id
+        try:
+            raw = self._docker("inspect", name)
+        except RuntimeError:
+            token = self.security.issue_service_token(environment_id, ttl=self.token_ttl)
+            argv = ["run", "--pull", "never", "-d", "--name", name,
+                         "--network", self.network, "--network-alias", name,
+                         "--add-host", "effect-store:host-gateway",
+                         "--label", "vibesecur.run-id=" + run_id,
+                         "--label", "vibesecur.environment-id=" + environment_id]
+            if promotion:
+                argv += ["--label", "vibesecur.artifact-digest=" + promotion["artifactDigest"],
+                         "--label", "vibesecur.source-sha256=" + promotion["sourceSha256"],
+                         "--label", "vibesecur.base-commit=" + promotion["baseCommit"]]
+                if promotion.get("id") == "verified-healthy-v1":
+                    argv += ["--label", "vibesecur.profile-id=" + promotion["id"],
+                             "--label", "vibesecur.profile-record-sha256=" + promotion["recordSha256"],
+                             "--label", "vibesecur.proof-sha256=" + promotion["proofSha256"]]
+            argv += [
+                         "--user", "65532:65532", "--cap-drop", "ALL",
+                         "--security-opt", "no-new-privileges", "--read-only",
+                         "--pids-limit", "64", "--memory", "256m", "--cpus", "0.5",
+                         "--tmpfs", "/tmp:rw,nosuid,nodev,size=32m",
+                         "--env", "ENVIRONMENT_ID=" + environment_id,
+                         "--env", "EFFECT_STORE_URL=http://effect-store:8000",
+                         "--env", "EFFECT_STORE_TOKEN=" + token,
+                         image, "python", "-m", "uvicorn",
+                         "payment_app.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+            self._docker(*argv)
+            raw = self._docker("inspect", name)
+        info = json.loads(raw)[0]
+        labels = info.get("Config", {}).get("Labels") or {}
+        if (labels.get("vibesecur.run-id") != run_id
+                or labels.get("vibesecur.environment-id") != environment_id
+                or info.get("Image") != image
+                or not info.get("State", {}).get("Running")):
+            raise RuntimeError("Payment container identity mismatch or stopped")
+        if promotion and any(labels.get(key) != promotion[value] for key, value in (
+                ("vibesecur.artifact-digest", "artifactDigest"),
+                ("vibesecur.source-sha256", "sourceSha256"),
+                ("vibesecur.base-commit", "baseCommit"))):
+            raise RuntimeError("Promoted payment container labels differ from verified artifact")
+        if promotion and promotion.get("id") == "verified-healthy-v1" and any(
+                labels.get(key) != promotion[value] for key, value in (
+                    ("vibesecur.profile-id", "id"),
+                    ("vibesecur.profile-record-sha256", "recordSha256"),
+                    ("vibesecur.proof-sha256", "proofSha256"))):
+            raise RuntimeError("Verified payment profile container labels differ from accepted record")
+        address = info.get("NetworkSettings", {}).get("Networks", {}).get(self.network, {}).get("IPAddress")
+        try:
+            ip = ipaddress.ip_address(address)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Payment container has no private network address") from exc
+        if not ip.is_private:
+            raise RuntimeError("Payment container address is not private")
+        return "http://" + str(ip) + ":8000"
+
+    def ensure(self, run: dict) -> None:
+        with self._lock:
+            for environment in ("baseline", "protected"):
+                environment_id = run[environment]["environmentId"]
+                if environment_id not in self._origins:
+                    origin = self._container(environment_id, run)
+                    deadline = time.monotonic() + 25
+                    renewed = False
+                    while time.monotonic() < deadline:
+                        try:
+                            response = httpx.get(origin + "/api/context", timeout=2.0, trust_env=False)
+                            if (response.status_code == 200
+                                    and response.json().get("environment", {}).get("environmentId") == environment_id):
+                                self._origins[environment_id] = origin
+                                break
+                            if (response.status_code == 403 and not renewed and
+                                    "Invalid environment capability" in response.text):
+                                self._refresh_expired_service(run, environment_id)
+                                origin = self._container(environment_id, run)
+                                renewed = True
+                                deadline = time.monotonic() + 25
+                                continue
+                        except (httpx.RequestError, ValueError):
+                            pass
+                        time.sleep(0.2)
+                    else:
+                        raise RuntimeError("Payment service did not bind to its trusted environment")
+
+    def _refresh_expired_service(self, run: dict, environment_id: str) -> None:
+        """Replace only the matching container when its scoped store token expired."""
+        name = "payment-" + environment_id
+        info = json.loads(self._docker("inspect", "--type", "container", name))[0]
+        labels = info.get("Config", {}).get("Labels") or {}
+        expected_image, promotion = self._expected_image(run, environment_id)
+        if (info.get("Name") != "/" + name or
+                info.get("Image") != expected_image or
+                labels.get("vibesecur.run-id") != run["runId"] or
+                labels.get("vibesecur.environment-id") != environment_id or
+                self.network not in (info.get("NetworkSettings", {}).get("Networks") or {}) or
+                info.get("State", {}).get("Running") is not True):
+            raise RuntimeError("Expired payment container identity mismatch")
+        if promotion and (labels.get("vibesecur.artifact-digest") != promotion["artifactDigest"] or
+                          labels.get("vibesecur.source-sha256") != promotion["sourceSha256"]):
+            raise RuntimeError("Expired promoted container identity mismatch")
+        self._docker("rm", "-f", name)
+        self._origins.pop(environment_id, None)
+
+    def host_origin(self, run: dict, environment: str) -> str:
+        if environment not in ("baseline", "protected"):
+            raise ValueError("Unknown payment environment")
+        self.ensure(run)
+        return self._origins[run[environment]["environmentId"]]
+
+    def _write_manifest(self, record: dict) -> None:
+        self.promotion_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = self._manifest_path(record["runId"])
+        temporary = path.with_name(path.name + "." + uuid4().hex + ".tmp")
+        temporary.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+
+    def _source_sha_in_image(self, image_or_container: str, *, running: bool) -> str:
+        source = ("import hashlib,pathlib; print(hashlib.sha256("
+                  "pathlib.Path('/opt/vibesecur/payment_app/app.py').read_bytes()).hexdigest())")
+        if running:
+            actual = self._docker("exec", image_or_container, "python", "-c", source).strip()
+        else:
+            actual = self._docker("run", "--rm", "--pull", "never", "--network", "none",
+                                  "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                                  "--user", "65532:65532", "--entrypoint", "python",
+                                  image_or_container, "-c", source, timeout=45).strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", actual):
+            raise RuntimeError("Payment image source hash probe failed")
+        return actual
+
+    def promote_verified(self, run: dict, patch_path: str, artifact_digest: str,
+                         base_commit: str) -> dict:
+        """Build and replace only this run's protected service from exact pinned input."""
+        from vibesecur.repair import prepare_candidate, validate_patch
+
+        run_id = run["runId"]
+        self._manifest_path(run_id)
+        protected_id = run["protected"]["environmentId"]
+        if (not _ENV_ID.fullmatch(protected_id) or
+                not re.fullmatch(r"[0-9a-f]{64}", artifact_digest) or
+                not re.fullmatch(r"[0-9a-f]{40}", base_commit)):
+            raise ValueError("Invalid verified promotion identity")
+        patch_file = Path(patch_path)
+        artifact_root = self.data_root / "artifacts"
+        if (patch_file.name != "patch.diff" or patch_file.is_symlink() or
+                not patch_file.resolve().is_relative_to(artifact_root) or
+                not patch_file.is_file()):
+            raise ValueError("Patch must be the collected repair artifact")
+        patch_bytes = patch_file.read_bytes()
+        if hashlib.sha256(patch_bytes).hexdigest() != artifact_digest:
+            raise ValueError("Verified patch digest changed")
+        patch = patch_bytes.decode("utf-8")
+        if validate_patch(patch) != ["payment_app/app.py"]:
+            raise ValueError("Promotion requires the reviewed payment handler patch only")
+        if self.repo_path is None or not self.repo_path.is_dir():
+            raise ValueError("Pinned source repository is unavailable")
+        with self._lock:
+            prior = self._manifest(run)
+            if prior:
+                if prior["artifactDigest"] != artifact_digest or prior["baseCommit"] != base_commit:
+                    raise RuntimeError("A different artifact is already promoted for this run")
+                probe = self.probe_promoted(run, artifact_digest, prior["imageDigest"])
+                if not probe.get("paymentRouteReady"):
+                    raise RuntimeError("Existing promoted service failed its probe")
+                return {"deployed": True, "artifactDigest": artifact_digest,
+                        "imageDigest": prior["imageDigest"], "sourceSha256": prior["sourceSha256"]}
+
+            self.ensure(run)
+            self.promotion_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with tempfile.TemporaryDirectory(prefix="build-", dir=self.promotion_root) as scratch:
+                work = Path(scratch)
+                candidate = prepare_candidate(self.repo_path, base_commit, work / "candidate", patch)
+                app_source = candidate / "payment_app" / "app.py"
+                source_sha = hashlib.sha256(app_source.read_bytes()).hexdigest()
+                context = work / "context"
+                shutil.copytree(candidate / "payment_app", context / "payment_app")
+                dockerfile = context / "Dockerfile"
+                base_image = _image_digest(self.image)
+                base_tag = "vibesecur-payment-base:" + base_image.removeprefix("sha256:")[:24]
+                self._docker("tag", base_image, base_tag)
+                base_info = json.loads(self._docker("image", "inspect", base_tag))[0]
+                if base_info.get("Id") != base_image:
+                    raise RuntimeError("Pinned payment base tag changed before build")
+                dockerfile.write_text("FROM " + base_tag + "\n"
+                                      "COPY --chown=65532:65532 payment_app/ /opt/vibesecur/payment_app/\n")
+                image_file = work / "image-id"
+                tag = "vibesecur-payment-" + artifact_digest[:24]
+                # Buildx writes activity state even for a local, network-free
+                # build. Keep its client state inside the service's narrow
+                # writable data path; ProtectHome remains read only.
+                docker_config = work / "docker-config"
+                docker_config.mkdir(mode=0o700)
+                self._build_image("--pull=false", "--network=none", "--iidfile", str(image_file),
+                             "--label", "vibesecur.artifact-digest=" + artifact_digest,
+                             "--label", "vibesecur.source-sha256=" + source_sha,
+                             "--label", "vibesecur.base-commit=" + base_commit,
+                             "-f", str(dockerfile), "-t", tag, str(context),
+                             docker_config=str(docker_config))
+                image = _image_digest(image_file.read_text().strip())
+                inspected = json.loads(self._docker("image", "inspect", image))[0]
+                image_labels = inspected.get("Config", {}).get("Labels") or {}
+                base_layers = base_info.get("RootFS", {}).get("Layers") or []
+                image_layers = inspected.get("RootFS", {}).get("Layers") or []
+                if (inspected.get("Id") != image or
+                        not base_layers or image_layers[:len(base_layers)] != base_layers or
+                        image_labels.get("vibesecur.artifact-digest") != artifact_digest or
+                        image_labels.get("vibesecur.source-sha256") != source_sha or
+                        image_labels.get("vibesecur.base-commit") != base_commit or
+                        self._source_sha_in_image(image, running=False) != source_sha):
+                    raise RuntimeError("Built payment image does not attest verified source")
+
+            name = "payment-" + protected_id
+            old = json.loads(self._docker("inspect", "--type", "container", name))[0]
+            old_labels = old.get("Config", {}).get("Labels") or {}
+            if (old.get("Image") != _image_digest(self.image) or
+                    old_labels.get("vibesecur.run-id") != run_id or
+                    old_labels.get("vibesecur.environment-id") != protected_id or
+                    not old.get("State", {}).get("Running")):
+                raise RuntimeError("Protected service is not the expected base image")
+            record = {"runId": run_id, "environmentId": protected_id,
+                      "artifactDigest": artifact_digest, "sourceSha256": source_sha,
+                      "baseCommit": base_commit, "baseImageDigest": _image_digest(self.image),
+                      "imageDigest": image, "promotedAt": time.time()}
+            self._docker("rm", "-f", name)
+            try:
+                self._write_manifest(record)
+                self._origins.pop(protected_id, None)
+                self.ensure(run)
+                probe = self.probe_promoted(run, artifact_digest, image)
+                if not probe.get("paymentRouteReady") or not probe.get("separateService"):
+                    raise RuntimeError("Promoted service failed post-deployment probe")
+            except Exception:
+                try:
+                    current = json.loads(self._docker("inspect", "--type", "container", name))[0]
+                    labels = current.get("Config", {}).get("Labels") or {}
+                    if (labels.get("vibesecur.run-id") == run_id and
+                            labels.get("vibesecur.environment-id") == protected_id and
+                            current.get("Image") == image):
+                        self._docker("rm", "-f", name)
+                except RuntimeError:
+                    pass
+                self._manifest_path(run_id).unlink(missing_ok=True)
+                self._origins.pop(protected_id, None)
+                self.ensure(run)
+                raise
+            return {"deployed": True, "artifactDigest": artifact_digest,
+                    "imageDigest": image, "sourceSha256": source_sha}
+
+    def probe_promoted(self, run: dict, artifact_digest: str, image_digest: str) -> dict:
+        """Attest running service identity and exercise its real payment route."""
+        with self._lock:
+            record = self._manifest(run)
+            if (not record or record["artifactDigest"] != artifact_digest or
+                    record["imageDigest"] != image_digest):
+                raise RuntimeError("Promoted artifact identity mismatch")
+            protected_id = record["environmentId"]
+            name = "payment-" + protected_id
+            info = json.loads(self._docker("inspect", "--type", "container", name))[0]
+            labels = info.get("Config", {}).get("Labels") or {}
+            if (info.get("Name") != "/" + name or info.get("Image") != image_digest or
+                    not info.get("State", {}).get("Running") or
+                    labels.get("vibesecur.run-id") != run["runId"] or
+                    labels.get("vibesecur.environment-id") != protected_id or
+                    labels.get("vibesecur.artifact-digest") != artifact_digest or
+                    labels.get("vibesecur.source-sha256") != record["sourceSha256"] or
+                    labels.get("vibesecur.base-commit") != record["baseCommit"] or
+                    info.get("Config", {}).get("WorkingDir") != "/opt/vibesecur" or
+                    "payment_app.app:create_app" not in (info.get("Config", {}).get("Cmd") or []) or
+                    any((mount.get("Destination") or "").startswith("/opt/vibesecur/payment_app")
+                        for mount in info.get("Mounts") or []) or
+                    self._source_sha_in_image(name, running=True) != record["sourceSha256"]):
+                raise RuntimeError("Running payment source does not match verified image")
+            networks = info.get("NetworkSettings", {}).get("Networks") or {}
+            address = networks.get(self.network, {}).get("IPAddress")
+            ip = ipaddress.ip_address(address)
+            if not ip.is_private:
+                raise RuntimeError("Promoted payment service lacks a private address")
+            baseline_id = run["baseline"]["environmentId"]
+            baseline = json.loads(self._docker("inspect", "--type", "container",
+                                               "payment-" + baseline_id))[0]
+            baseline_labels = baseline.get("Config", {}).get("Labels") or {}
+            separate = (baseline.get("Id") != info.get("Id") and
+                        baseline.get("Image") == _image_digest(self.image) and
+                        baseline_labels.get("vibesecur.run-id") == run["runId"] and
+                        baseline_labels.get("vibesecur.environment-id") == baseline_id and
+                        baseline.get("State", {}).get("Running") is True)
+            if not separate:
+                raise RuntimeError("Baseline and promoted payment identities are not separate")
+            origin = "http://" + str(ip) + ":8000"
+            health = httpx.get(origin + "/health", timeout=5, trust_env=False)
+            before = httpx.get(origin + "/api/context", timeout=5, trust_env=False)
+            rejected = httpx.post(origin + "/api/payments", json={}, timeout=5, trust_env=False)
+            after = httpx.get(origin + "/api/context", timeout=5, trust_env=False)
+            if (health.status_code != 200 or before.status_code != 200 or after.status_code != 200 or
+                    rejected.status_code not in (400, 403, 422)):
+                raise RuntimeError("Promoted payment HTTP probe failed")
+            before_state, after_state = before.json(), after.json()
+            if (before_state.get("environment", {}).get("environmentId") != protected_id or
+                    after_state.get("environment", {}).get("environmentId") != protected_id or
+                    before_state.get("environment", {}).get("ledger") !=
+                    after_state.get("environment", {}).get("ledger")):
+                raise RuntimeError("Payment probe changed the trusted ledger")
+            return {"artifactDigest": artifact_digest, "imageDigest": image_digest,
+                    "sourceSha256": record["sourceSha256"], "paymentRouteReady": True,
+                    "separateService": True, "containerId": info["Id"],
+                    "baselineContainerId": baseline["Id"], "httpStatus": rejected.status_code}
+
+    def teardown(self, run: dict) -> None:
+        run_id = run["runId"]
+        if not re.fullmatch(r"run-[0-9a-f]{32}", run_id):
+            raise ValueError("Invalid run ID")
+        with self._lock:
+            for environment in ("baseline", "protected"):
+                environment_id = run[environment]["environmentId"]
+                if not _ENV_ID.fullmatch(environment_id):
+                    raise ValueError("Invalid environment ID")
+                name = "payment-" + environment_id
+                process = subprocess.run(["docker", "inspect", "--type", "container", name],
+                                         capture_output=True, text=True, timeout=15,
+                                         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+                if process.returncode:
+                    if "No such object" in process.stderr or "No such container" in process.stderr:
+                        self._origins.pop(environment_id, None)
+                        continue
+                    raise RuntimeError("Payment container inspection failed")
+                info = json.loads(process.stdout)[0]
+                labels = info.get("Config", {}).get("Labels") or {}
+                expected_image, promotion = self._expected_image(run, environment_id)
+                if (info.get("Name") != "/" + name
+                        or labels.get("vibesecur.run-id") != run_id
+                        or labels.get("vibesecur.environment-id") != environment_id
+                        or info.get("Image") != expected_image
+                        or self.network not in (info.get("NetworkSettings", {}).get("Networks") or {})):
+                    raise RuntimeError("Payment container identity mismatch; refusing cleanup")
+                if promotion and labels.get("vibesecur.artifact-digest") != promotion["artifactDigest"]:
+                    raise RuntimeError("Promoted container artifact label changed")
+                self._docker("rm", "-f", name)
+                self._origins.pop(environment_id, None)
+            self._manifest_path(run_id).unlink(missing_ok=True)
+
+
+class WorkerAdapter:
+    """Launch OpenHands through OpenShell or a separately evidenced Docker path.
+
+    This adapter refuses to infer containment from Docker flags alone. The
+    operator must run the fault-injection boundary gate and explicitly pass its
+    successful evidence in the host-only config before enabling live work.
+    """
+
+    def __init__(self, config: dict):
+        runtime = config.get("runtime")
+        if runtime not in ("docker", "openshell") or not config.get("networkVerified"):
+            raise ValueError("Worker requires verified containment")
+        for key in ("network", "image", "artifactDir", "applicationUrl", "modelBaseUrl", "model"):
+            if not config.get(key):
+                raise ValueError(f"Worker requires {key}")
+        image_digest = _image_digest(config["image"])
+        evidence_path = config.get("boundaryEvidencePath")
+        try:
+            evidence = json.loads(Path(evidence_path).read_text(encoding="utf-8")) if evidence_path else None
+        except (OSError, ValueError, TypeError):
+            evidence = None
+        checked_at = evidence.get("checkedAt") if isinstance(evidence, dict) else None
+        if (not isinstance(evidence, dict) or evidence.get("passed") is not True
+                or evidence.get("runtime") != runtime
+                or evidence.get("network") != config["network"]
+                or evidence.get("imageDigest") != image_digest
+                or not isinstance(checked_at, (int, float))
+                or not 0 <= time.time() - checked_at <= 3600):
+            raise ValueError("Worker requires recent boundary evidence")
+        coverage = evidence.get("coverage") or {}
+        route = evidence.get("routeProof") or {}
+        if (evidence.get("profile") != "owned-demo-v1"
+                or not isinstance(coverage, dict)
+                or not isinstance(route, dict)
+                or coverage.get("metadataDenied", False) is not None
+                or coverage.get("azurePlatformDenied", False) is not None
+                or coverage.get("providerRouteDenied") is not True
+                or coverage.get("externalDenied") is not True
+                or not isinstance(evidence.get("bridgeSubnet"), str)
+                or route.get("method") != "proc_net_route"
+                or route.get("expectedSubnet") != evidence["bridgeSubnet"]
+                or not isinstance(route.get("ipv4Routes"), list)
+                or not route["ipv4Routes"]
+                or not isinstance(route.get("ipv6Routes"), list)
+                or any(route.get(key) is not True for key in
+                       ("noDefaultRoute", "onlyExpectedInternalRoutes", "providerRouteDenied"))):
+            raise ValueError("Worker requires owned demo boundary profile and route proof")
+        if runtime == "openshell":
+            if (config["network"] != WORKER_NETWORK_NAME
+                    or evidence.get("bridgeSubnet") != WORKER_BRIDGE_SUBNET
+                    or evidence.get("bridgeGateway") != WORKER_BRIDGE_GATEWAY
+                    or not re.fullmatch(r"[0-9a-f]{64}",
+                                        str(evidence.get("networkId", "")))):
+                raise ValueError("Worker requires exact internal network identity")
+            required_coverage = ("applicationReachable", "modelRelayReachable", "controllerDenied",
+                                 "verifierDenied", "hostGatewayDenied", "otherPaymentDenied",
+                                 "providerRouteDenied", "externalDenied",
+                                 "dockerSocketDenied", "workspaceWritableEtcDenied", "policyEnforced",
+                                 "landlockEnforced", "imagePinned", "networkMatched", "notPrivileged")
+            if not all((evidence.get("coverage") or {}).get(key) is True for key in required_coverage):
+                raise ValueError("Worker requires measured OpenShell boundary coverage")
+            template_path = config.get("policyTemplatePath")
+            try:
+                template = Path(template_path).read_bytes()
+            except (OSError, TypeError):
+                raise ValueError("Worker requires OpenShell policy template") from None
+            if hashlib.sha256(template).hexdigest() != evidence.get("policyTemplateSha256"):
+                raise ValueError("Worker policy differs from measured template")
+            try:
+                _, binding = expected_policy(template_path, evidence["paymentHost"])
+            except (OSError, ValueError, KeyError, TypeError):
+                raise ValueError("Worker policy binding unavailable") from None
+            if (binding["policyBindingSha256"] != evidence.get("policyBindingSha256")
+                    or binding["renderedPolicySha256"] != evidence.get("renderedPolicySha256")
+                    or not re.fullmatch(r"[0-9a-f]{64}",
+                                        str(evidence.get("policyEffectiveHash", "")))):
+                raise ValueError("Worker policy differs from measured effective policy")
+            if not config.get("imageRef") or not config.get("openshellCli"):
+                raise ValueError("Worker requires OpenShell CLI and image reference")
+        else:
+            required_coverage = ("applicationReachable", "modelRelayReachable",
+                                 "controllerDenied", "verifierDenied", "hostGatewayDenied",
+                                 "dockerSocketDenied", "providerRouteDenied", "externalDenied")
+            if not all(coverage.get(key) is True for key in required_coverage):
+                raise ValueError("Worker requires measured Docker boundary coverage")
+        if not callable(config.get("leaseFactory")):
+            raise ValueError("Worker requires a task-scoped model lease factory")
+        if config.get("reasoningEffort", "low") not in ("low", "medium"):
+            raise ValueError("Worker reasoning effort must be low or medium")
+        self.config = dict(config)
+        self._boundary_checked_at = checked_at
+        self._network_id = evidence.get("networkId") if runtime == "openshell" else None
+        self._policy_template_digest = evidence.get("policyTemplateSha256") if runtime == "openshell" else None
+        self._jobs: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _uuid(value: object) -> UUID:
+        try:
+            parsed = UUID(value) if isinstance(value, str) else None
+            if parsed is None or str(parsed) != value:
+                raise ValueError
+            return parsed
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("Worker requires a canonical conversation or turn UUID") from None
+
+    @classmethod
+    def _volume_name(cls, conversation_id: str) -> str:
+        return "vibesecur-conversation-" + cls._uuid(conversation_id).hex
+
+    @staticmethod
+    def _volume_labels(run_id: str, conversation_id: str) -> dict:
+        return {"openshell.ai/sandbox-attachable": "true",
+                "openshell.ai/sandbox-attachable-workspace": "default",
+                "vibesecur.run-id": run_id,
+                "vibesecur.conversation-id": conversation_id}
+
+    def _inspect_conversation_volume(self, name: str, labels: dict) -> bool:
+        inspected = subprocess.run(["docker", "volume", "inspect", name],
+                                   capture_output=True, text=True, timeout=10, check=False)
+        if inspected.returncode:
+            return False
+        try:
+            info = json.loads(inspected.stdout)[0]
+        except (ValueError, IndexError, TypeError):
+            raise RuntimeError("Conversation volume identity unavailable") from None
+        observed = info.get("Labels") or {}
+        if (info.get("Name") != name or info.get("Driver") != "local"
+                or info.get("Scope") != "local" or info.get("Options") not in (None, {})
+                or not isinstance(observed, dict)
+                or any(observed.get(key) != value for key, value in labels.items())):
+            raise RuntimeError("Conversation volume identity mismatch")
+        return True
+
+    def _ensure_conversation_volume(self, run_id: str, conversation_id: str) -> str:
+        name = self._volume_name(conversation_id)
+        labels = self._volume_labels(run_id, conversation_id)
+        if not self._inspect_conversation_volume(name, labels):
+            command = ["docker", "volume", "create"]
+            for key in _VOLUME_LABELS:
+                command += ["--label", key + "=" + labels[key]]
+            command.append(name)
+            created = subprocess.run(command, capture_output=True, text=True,
+                                     timeout=15, check=False)
+            if created.returncode or created.stdout.strip() != name:
+                raise RuntimeError("Conversation volume creation failed")
+            if not self._inspect_conversation_volume(name, labels):
+                raise RuntimeError("Conversation volume was not created")
+        return name
+
+    @staticmethod
+    def _validate_conversation_mount(info: dict, volume_name: str) -> None:
+        # OpenShell 0.0.116 Docker driver creates five fixed read-only binds:
+        # supervisor, three guest mTLS files, and a sandbox JWT. Our driver
+        # config adds exactly one named conversation volume. An extra mount
+        # (including a parent/child shadow) is never part of this template.
+        sandbox_id = (info.get("Config", {}).get("Labels") or {}).get("openshell.ai/sandbox-id")
+        if not isinstance(sandbox_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,128}", sandbox_id):
+            raise RuntimeError("OpenShell employee conversation mount mismatch")
+        expected = {
+            "/workspace/conversations": ("volume", volume_name, True),
+            "/etc/openshell/tls/client/ca.crt": ("bind", "/var/lib/openshell/tls/ca.crt", False),
+            "/etc/openshell/tls/client/tls.crt": ("bind", "/var/lib/openshell/tls/client/tls.crt", False),
+            "/etc/openshell/tls/client/tls.key": ("bind", "/var/lib/openshell/tls/client/tls.key", False),
+            "/etc/openshell/auth/sandbox.jwt": (
+                "bind", "/var/lib/openshell/.local/state/openshell/docker-sandbox-tokens/openshell/"
+                + sandbox_id + "/sandbox.jwt", False),
+        }
+        mounts = info.get("Mounts")
+        if not isinstance(mounts, list) or len(mounts) != len(expected) + 1:
+            raise RuntimeError("OpenShell employee conversation mount mismatch")
+        seen = set()
+        for entry in mounts:
+            if not isinstance(entry, dict):
+                raise RuntimeError("OpenShell employee conversation mount mismatch")
+            destination = entry.get("Destination")
+            if destination in seen or not isinstance(destination, str):
+                raise RuntimeError("OpenShell employee conversation mount mismatch")
+            seen.add(destination)
+            if destination == "/opt/openshell/bin/openshell-sandbox":
+                source = entry.get("Source")
+                if (entry.get("Type") != "bind" or entry.get("RW") is not False
+                        or not isinstance(source, str)
+                        or not re.fullmatch(
+                            r"/var/lib/openshell/openshell/docker-supervisor/sha256-[0-9a-f]{64}/openshell-sandbox",
+                            source)):
+                    raise RuntimeError("OpenShell employee conversation mount mismatch")
+                continue
+            kind, source, writable = expected.get(destination, (None, None, None))
+            actual_source = entry.get("Name") if kind == "volume" else entry.get("Source")
+            if (entry.get("Type") != kind or actual_source != source
+                    or entry.get("RW") is not writable):
+                raise RuntimeError("OpenShell employee conversation mount mismatch")
+        if seen != set(expected) | {"/opt/openshell/bin/openshell-sandbox"}:
+            raise RuntimeError("OpenShell employee conversation mount mismatch")
+
+    def teardown_conversation(self, run: dict) -> None:
+        """Remove only this run's labeled state after cancellation/reset fencing."""
+        run_id = run.get("runId")
+        conversation = run.get("conversation") or {}
+        conversation_id = conversation.get("conversationId")
+        if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
+            raise ValueError("Invalid worker run ID")
+        if conversation_id is None:
+            return
+        name = self._volume_name(conversation_id)
+        with self._lock:
+            if any(job.get("runId") == run_id and job.get("state") == "running"
+                   for job in self._jobs.values()):
+                raise RuntimeError("Active worker must be fenced before conversation cleanup")
+        if self._inspect_conversation_volume(name, self._volume_labels(run_id, conversation_id)):
+            removed = subprocess.run(["docker", "volume", "rm", name], capture_output=True,
+                                     text=True, timeout=15, check=False)
+            if removed.returncode:
+                raise RuntimeError("Conversation volume cleanup failed")
+
+    def _verify_openshell_admission(self) -> None:
+        if not 0 <= time.time() - self._boundary_checked_at <= 3600:
+            raise ValueError("Worker boundary evidence expired")
+        inspected = subprocess.run(["docker", "network", "inspect", self.config["network"]],
+                                   capture_output=True, text=True, timeout=10, check=True)
+        network = json.loads(inspected.stdout)[0]
+        validate_worker_network(network)
+        if network["Id"] != self._network_id:
+            raise ValueError("Worker network changed after boundary gate")
+        if (hashlib.sha256(Path(self.config["policyTemplatePath"]).read_bytes()).hexdigest()
+                != self._policy_template_digest):
+            raise ValueError("Worker policy differs from measured template")
+
+    def _cleanup_fence_path(self, run_id: str) -> Path:
+        if not _RUN_ID.fullmatch(run_id):
+            raise ValueError("Invalid worker run ID")
+        return Path(self.config["artifactDir"]).resolve() / "cleanup-fences" / (run_id + ".json")
+
+    def _assert_cleanup_reconciled(self, run_id: str) -> None:
+        if self._cleanup_fence_path(run_id).exists():
+            raise RuntimeError("Previous sandbox cleanup reconciliation required")
+
+    def _clear_cleanup_fence_for_job(self, job_id: str) -> None:
+        root = Path(self.config["artifactDir"]).resolve() / "cleanup-fences"
+        if not root.is_dir():
+            return
+        for path in root.glob("run-*.json"):
+            if path.is_symlink():
+                raise RuntimeError("Sandbox cleanup fence identity unavailable")
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raise RuntimeError("Sandbox cleanup fence identity unavailable") from None
+            if (record.get("jobId") == job_id and
+                    path == self._cleanup_fence_path(record.get("runId", ""))):
+                path.unlink()
+
+    def run_turn(self, run: dict, turn: dict, on_event) -> dict:
+        """Process one authenticated Maya turn in the same persisted SDK state."""
+        if self.config["runtime"] != "openshell":
+            raise ValueError("Employee conversation requires measured OpenShell runtime")
+        run_id = run.get("runId")
+        if (not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id)
+                or run.get("mode") != "live"):
+            raise ValueError("Employee turn requires a live synthetic run")
+        conversation = run.get("conversation") or {}
+        conversation_id = conversation.get("conversationId")
+        self._uuid(conversation_id)
+        turn_id = turn.get("turnId")
+        self._uuid(turn_id)
+        current = next((item for item in conversation.get("turns", [])
+                        if item.get("turnId") == turn_id), None)
+        if (not isinstance(current, dict) or conversation.get("activeTurnId") != turn_id
+                or current.get("status") != "running" or current.get("text") != turn.get("text")
+                or current.get("scope") not in ("read_only", "pay_approved", "clarification")
+                or run.get("state") in ("cancelled", "reset")):
+            raise ValueError("Employee turn is not the active scoped turn")
+        task_id = f"worker-{run_id}-{turn_id}"
+        token = run.get("workerModelToken")
+        if (run.get("workerModelTaskId") != task_id or not isinstance(token, str)
+                or not token or len(token) > 2048):
+            raise ValueError("Employee turn requires a fresh scoped model lease")
+        if not isinstance(current["text"], str) or not 1 <= len(current["text"].strip()) <= 2000:
+            raise ValueError("Employee turn text is invalid")
+        self._assert_cleanup_reconciled(run_id)
+        self._verify_openshell_admission()
+        return self._run_turn_openshell(run, current, task_id, token, on_event)
+
+    def start(self, run: dict, environment: str, on_event) -> dict:
+        scenario = _worker_scenario(run)
+        if not 0 <= time.time() - self._boundary_checked_at <= 3600:
+            raise ValueError("Worker boundary evidence expired")
+        if self.config["runtime"] == "openshell":
+            inspected = subprocess.run(["docker", "network", "inspect", self.config["network"]],
+                                       capture_output=True, text=True, timeout=10, check=True)
+            network = json.loads(inspected.stdout)[0]
+            validate_worker_network(network)
+            if network["Id"] != self._network_id:
+                raise ValueError("Worker network changed after boundary gate")
+        if self.config["runtime"] == "openshell":
+            if hashlib.sha256(Path(self.config["policyTemplatePath"]).read_bytes()).hexdigest() != self._policy_template_digest:
+                raise ValueError("Worker policy differs from measured template")
+            return self._start_openshell(run, environment, on_event)
+        if environment not in ("baseline", "protected"):
+            raise ValueError("Unknown environment")
+        application_url = self.config["applicationUrl"].replace(
+            "{environmentId}", run[environment]["environmentId"])
+        task_id = f"worker-{run['runId']}-{environment}"
+        model_token = self.config["leaseFactory"](task_id)
+        if not isinstance(model_token, str) or not model_token:
+            raise ValueError("A task-scoped model lease is required")
+        job_id = "worker-" + uuid4().hex
+        artifact_dir = Path(self.config["artifactDir"]).resolve() / job_id
+        artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+        mission = {"jobId": job_id, "runId": run["runId"], "environment": environment,
+                   "applicationUrl": application_url, "modelBaseUrl": self.config["modelBaseUrl"],
+                   "modelToken": model_token, "model": self.config["model"],
+                   "reasoningEffort": self.config.get("reasoningEffort", "low"),
+                   "scenario": scenario,
+                   "maxSteps": min(int(self.config.get("maxSteps", 50)), 50)}
+        mission_path = artifact_dir / "mission-private.json"
+        # The containing host directory is private; the non-root container
+        # needs read access to its one read-only bind mount.
+        fd = os.open(mission_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(fd, "w") as output:
+            json.dump(mission, output, separators=(",", ":"))
+        events_path = artifact_dir / "worker-events.jsonl"
+        timeout = min(int(self.config.get("timeoutSeconds", 300)), 300)
+        command = ["docker", "run", "--rm", "--name", job_id,
+                   "--network", self.config["network"], "--read-only",
+                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                   "--pids-limit", "128", "--memory", "1024m", "--cpus", "1",
+                   "--user", "65532:65532", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+                   "--tmpfs", "/workspace:rw,nosuid,size=256m,uid=65532,gid=65532,mode=0700",
+                   "--mount", f"type=bind,source={mission_path},target=/run/mission.json,readonly",
+                   self.config["image"], "python", "-m", "worker_runtime.run", "/run/mission.json"]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+        with self._lock:
+            self._jobs[job_id] = {"process": process, "state": "running", "eventsPath": str(events_path),
+                                  "artifactDir": str(artifact_dir), "taskId": task_id}
+        on_event({"kind": "worker.started", "jobId": job_id, "taskId": task_id, "runtime": "docker",
+                  "boundary": "prevalidated_docker_network", "source": "host_supervisor"})
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            state = "finished" if process.returncode == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            self._remove_container(job_id)
+            process.kill()
+            stdout, stderr = process.communicate()
+            state = "timeout"
+        finally:
+            mission_path.unlink(missing_ok=True)
+        events = []
+        with events_path.open("w", encoding="utf-8") as output:
+            for line in stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                # SDK output is untrusted and can contain synthetic prompt text;
+                # the lease must not be exposed in presenter events or exports.
+                serialized = json.dumps(event, ensure_ascii=False).replace(model_token, "[REDACTED]")
+                event = json.loads(serialized)
+                output.write(json.dumps(event, separators=(",", ":")) + "\n")
+                events.append(event)
+                presenter_event = _presenter_worker_event(event)
+                if presenter_event is not None:
+                    on_event(presenter_event)
+        with self._lock:
+            if self._jobs[job_id]["state"] == "cancelled":
+                state = "cancelled"
+        result = {"jobId": job_id, "taskId": task_id, "state": state, "exitCode": process.returncode,
+                  "eventsPath": str(events_path), "eventCount": len(events),
+                  "stderrTail": stderr[-500:].replace(model_token, "[REDACTED]")}
+        with self._lock:
+            self._jobs[job_id].update(state=state, result=result)
+        on_event({"kind": "worker.finished", "jobId": job_id, "state": state,
+                  "exitCode": process.returncode, "source": "host_supervisor"})
+        return result
+
+    def _start_openshell(self, run: dict, environment: str, on_event) -> dict:
+        if environment not in ("baseline", "protected"):
+            raise ValueError("Unknown environment")
+        environment_id = run[environment]["environmentId"]
+        if not _ENV_ID.fullmatch(environment_id):
+            raise ValueError("Invalid environment ID")
+        payment_host = "payment-" + environment_id
+        task_id = f"worker-{run['runId']}-{environment}"
+        token = self.config["leaseFactory"](task_id)
+        if not isinstance(token, str) or not token:
+            raise ValueError("A task-scoped model lease is required")
+        job_id = "worker-" + uuid4().hex
+        sandbox_name = "vw-" + job_id[-16:]
+        artifact_dir = Path(self.config["artifactDir"]).resolve() / job_id
+        artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+        events_path = artifact_dir / "worker-events.jsonl"
+        policy_path = artifact_dir / "policy.yaml"
+        template = Path(self.config["policyTemplatePath"]).read_text(encoding="utf-8")
+        if template.count("__PAYMENT_HOST__") != 1:
+            raise ValueError("OpenShell policy template must have one payment host")
+        policy_path.write_text(template.replace("__PAYMENT_HOST__", payment_host), encoding="utf-8")
+        policy_path.chmod(0o600)
+        mission = {"jobId": job_id, "runId": run["runId"], "environment": environment,
+                   "applicationUrl": self.config["applicationUrl"].replace("{environmentId}", environment_id),
+                   "modelBaseUrl": self.config["modelBaseUrl"], "modelToken": token,
+                   "model": self.config["model"],
+                   "reasoningEffort": self.config.get("reasoningEffort", "low"),
+                   "scenario": _worker_scenario(run),
+                   "maxSteps": min(int(self.config.get("maxSteps", 50)), 50)}
+        timeout = min(int(self.config.get("timeoutSeconds", 300)), 300)
+        cli = self.config["openshellCli"]
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+               "HOME": os.environ.get("HOME", "/home/demo")}
+        with self._lock:
+            self._jobs[job_id] = {"process": None, "state": "running", "eventsPath": str(events_path),
+                                  "artifactDir": str(artifact_dir), "taskId": task_id}
+        on_event({"kind": "worker.started", "jobId": job_id, "taskId": task_id,
+                  "runtime": "openshell", "boundary": "measured_enforced_policy",
+                  "source": "host_supervisor"})
+        stdout, stderr, exit_code, state = "", "", None, "failed"
+        try:
+            created = subprocess.run([cli, "sandbox", "create", "--name", sandbox_name,
+                                      "--from", self.config["imageRef"], "--policy", str(policy_path),
+                                      "--cpu", "1", "--memory", "1Gi", "--detach", "--",
+                                      "sleep", str(timeout + 60)], capture_output=True, text=True,
+                                     timeout=75, env=env, check=False)
+            if created.returncode:
+                stderr = created.stderr[-500:]
+                raise RuntimeError("OpenShell sandbox creation failed")
+            sandbox_id = None
+            deadline = time.monotonic() + 35
+            while time.monotonic() < deadline:
+                with self._lock:
+                    if self._jobs[job_id]["state"] == "cancelled":
+                        state = "cancelled"
+                        break
+                listed = subprocess.run([cli, "sandbox", "list", "--output", "json"],
+                                        capture_output=True, text=True, timeout=10, env=env, check=False)
+                if listed.returncode == 0:
+                    found = next((item for item in json.loads(listed.stdout)
+                                  if item.get("name") == sandbox_name and item.get("phase") == "Ready"), None)
+                    if found:
+                        sandbox_id = found["id"]
+                        break
+                time.sleep(0.25)
+            if state != "cancelled":
+                if sandbox_id is None:
+                    raise RuntimeError("OpenShell sandbox did not become ready")
+                container = "openshell-default--" + sandbox_name + "-" + sandbox_id
+                inspected = subprocess.run(["docker", "inspect", container], capture_output=True,
+                                           text=True, timeout=10, env=env, check=True)
+                info = json.loads(inspected.stdout)[0]
+                validate_worker_attachment(info, self._network_id)
+                if (info.get("Image") != _image_digest(self.config["image"])
+                        or info.get("HostConfig", {}).get("Privileged") is not False):
+                    raise RuntimeError("OpenShell worker image or network identity mismatch")
+                policy = subprocess.run([cli, "policy", "get", sandbox_name, "--full",
+                                         "--output", "json"],
+                                        capture_output=True, text=True, timeout=15, env=env, check=True)
+                try:
+                    approved_policy, _ = expected_policy(self.config["policyTemplatePath"],
+                                                         payment_host)
+                    effective_policy(policy.stdout, approved_policy, sandbox_name)
+                except (OSError, ValueError, TypeError):
+                    raise RuntimeError("OpenShell worker policy did not match approved rules") from None
+                command = [cli, "sandbox", "exec", "--name", sandbox_name, "--timeout", str(timeout),
+                           "--no-tty", "--", "python", "/opt/vibesecur/worker_runtime/run.py", "-"]
+                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True, env=env)
+                with self._lock:
+                    self._jobs[job_id]["process"] = process
+                try:
+                    stdout, stderr = process.communicate(input=json.dumps(mission, separators=(",", ":")),
+                                                         timeout=timeout + 10)
+                    exit_code = process.returncode
+                    state = "finished" if exit_code == 0 else "failed"
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    stdout, stderr = process.communicate()
+                    exit_code, state = process.returncode, "timeout"
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+            stderr = (stderr + " " + type(exc).__name__)[:500]
+            if state != "cancelled":
+                state = "failed"
+        finally:
+            self._remove_container(job_id)
+        events = []
+        with events_path.open("w", encoding="utf-8") as output:
+            for line in stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                event = json.loads(json.dumps(event, ensure_ascii=False).replace(token, "[REDACTED]"))
+                output.write(json.dumps(event, separators=(",", ":")) + "\n")
+                events.append(event)
+                presenter_event = _presenter_worker_event(event)
+                if presenter_event is not None:
+                    on_event(presenter_event)
+        with self._lock:
+            if self._jobs[job_id]["state"] == "cancelled":
+                state = "cancelled"
+        result = {"jobId": job_id, "taskId": task_id, "state": state, "exitCode": exit_code,
+                  "eventsPath": str(events_path), "eventCount": len(events),
+                  "stderrTail": stderr[-500:].replace(token, "[REDACTED]")}
+        with self._lock:
+            self._jobs[job_id].update(state=state, result=result)
+        on_event({"kind": "worker.finished", "jobId": job_id, "state": state,
+                  "exitCode": exit_code, "source": "host_supervisor"})
+        return result
+
+    @staticmethod
+    def _stream_worker_output(process, mission: dict, token: str, output_path: Path,
+                              timeout: int, on_event) -> tuple[int, str | None, str | None]:
+        """Read JSONL as produced, preserving only filtered records on the host."""
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(json.dumps(mission, separators=(",", ":")).encode("utf-8"))
+        process.stdin.close()
+        deadline = time.monotonic() + timeout + 10
+        stream = selectors.DefaultSelector()
+        stream.register(process.stdout, selectors.EVENT_READ)
+        pending = bytearray()
+        count = 0
+        assistant = None
+        sdk_error = None
+
+        def record(raw: bytes, output):
+            nonlocal count, assistant, sdk_error
+            if len(raw) > 131072:
+                return
+            try:
+                event = json.loads(raw)
+            except (ValueError, UnicodeDecodeError):
+                return
+            if not isinstance(event, dict):
+                return
+            # Worker stdout is agent-controlled. Keep an allowlisted projection
+            # even in the private host artifact and never write the lease.
+            projected = _presenter_worker_event(event)
+            if projected is None:
+                return
+            data = projected["payload"]
+            if data.get("turnId") != mission["turnId"]:
+                return
+            serialized = json.dumps(projected, ensure_ascii=False, separators=(",", ":"))
+            if token in serialized:
+                return
+            output.write(serialized + "\n")
+            output.flush()
+            count += 1
+            on_event(projected)
+            if projected["kind"] == "worker.assistant":
+                assistant = data["text"]
+            elif projected["kind"] == "worker.sdk_error":
+                sdk_error = data["errorType"]
+
+        try:
+            with output_path.open("x", encoding="utf-8") as output:
+                os.chmod(output_path, 0o600)
+                while stream.get_map():
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(process.args, timeout)
+                    if not stream.select(timeout=min(0.5, deadline - time.monotonic())):
+                        if process.poll() is not None:
+                            # A pipe can outlive the process briefly; wait until EOF.
+                            continue
+                        continue
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        stream.unregister(process.stdout)
+                        if pending:
+                            record(bytes(pending), output)
+                        break
+                    pending.extend(chunk)
+                    if len(pending) > 262144:
+                        raise RuntimeError("Worker event line exceeded limit")
+                    while b"\n" in pending:
+                        raw, _, tail = pending.partition(b"\n")
+                        pending = bytearray(tail)
+                        record(raw, output)
+            process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        finally:
+            stream.close()
+        return count, assistant, sdk_error
+
+    def _run_turn_openshell(self, run: dict, turn: dict, task_id: str,
+                            token: str, on_event) -> dict:
+        run_id = run["runId"]
+        conversation_id, turn_id = run["conversation"]["conversationId"], turn["turnId"]
+        environment_id = run["protected"]["environmentId"]
+        if not isinstance(environment_id, str) or not _ENV_ID.fullmatch(environment_id):
+            raise ValueError("Invalid protected payment environment")
+        payment_host = "payment-" + environment_id
+        application_url = self.config["applicationUrl"].replace("{environmentId}", environment_id)
+        volume_name = self._ensure_conversation_volume(run_id, conversation_id)
+        job_id = "worker-" + uuid4().hex
+        sandbox_name = "vw-" + job_id[-16:]
+        artifact_dir = Path(self.config["artifactDir"]).resolve() / job_id
+        artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+        events_path = artifact_dir / "worker-events.jsonl"
+        policy_path = artifact_dir / "policy.yaml"
+        fence_path = self._cleanup_fence_path(run_id)
+        fence_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if fence_path.exists():
+            raise RuntimeError("Previous sandbox cleanup reconciliation required")
+        policy_text, approved_policy = render_turn_policy(self.config["policyTemplatePath"],
+                                                           payment_host, turn["scope"])
+        policy_path.write_text(policy_text, encoding="utf-8")
+        policy_path.chmod(0o600)
+        mission = {"kind": "employee_turn", "jobId": job_id, "runId": run_id,
+                   "turnId": turn_id, "conversationId": conversation_id,
+                   "environment": "protected", "scope": turn["scope"],
+                   "text": turn["text"], "applicationUrl": application_url,
+                   "modelBaseUrl": self.config["modelBaseUrl"], "modelToken": token,
+                   "model": self.config["model"],
+                   "reasoningEffort": self.config.get("reasoningEffort", "low"),
+                   "maxSteps": min(int(self.config.get("maxSteps", 50)), 50)}
+        context = turn.get("continuationContext")
+        if context is not None:
+            if (context != "The independently verified repair was deployed. Reconcile the payment receipt and continue the original authorized task."
+                    or not isinstance(turn.get("sourceTurnId"), str)):
+                raise ValueError("Unrecognized trusted continuation context")
+            self._uuid(turn["sourceTurnId"])
+            mission["continuationContext"] = context
+            mission["sourceTurnId"] = turn["sourceTurnId"]
+        timeout = min(int(self.config.get("timeoutSeconds", 300)), 300)
+        cli = self.config["openshellCli"]
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+               "HOME": os.environ.get("HOME", "/home/demo")}
+        driver_config = json.dumps({"docker": {"mounts": [{"type": "volume",
+            "source": volume_name, "target": "/workspace/conversations", "read_only": False}]}},
+            separators=(",", ":"))
+        with self._lock:
+            self._jobs[job_id] = {"process": None, "state": "running",
+                                  "eventsPath": str(events_path), "artifactDir": str(artifact_dir),
+                                  "taskId": task_id, "runId": run_id, "turnId": turn_id}
+        on_event({"kind": "worker.started", "jobId": job_id, "taskId": task_id,
+                  "turnId": turn_id, "runtime": "openshell",
+                  "boundary": "measured_enforced_policy", "source": "host_supervisor"})
+        process = None
+        creation_attempted = False
+        cleanup_uncertain = False
+        exit_code, state, event_count, assistant, sdk_error = None, "failed", 0, None, None
+        try:
+            with self._lock:
+                if self._jobs[job_id]["state"] == "cancelled":
+                    state = "cancelled"
+            if state != "cancelled":
+                with fence_path.open("x", encoding="utf-8") as output:
+                    json.dump({"runId": run_id, "jobId": job_id, "sandboxName": sandbox_name}, output)
+                fence_path.chmod(0o600)
+                creation_attempted = True
+                created = subprocess.run([cli, "sandbox", "create", "--name", sandbox_name,
+                    "--from", self.config["imageRef"], "--policy", str(policy_path),
+                    "--driver-config-json", driver_config, "--cpu", "1", "--memory", "1Gi",
+                    "--detach", "--", "sleep", str(timeout + 60)],
+                    capture_output=True, text=True, timeout=75, env=env, check=False)
+                if created.returncode:
+                    raise RuntimeError("OpenShell employee sandbox creation failed")
+                sandbox_id = None
+                deadline = time.monotonic() + 35
+                while time.monotonic() < deadline:
+                    with self._lock:
+                        if self._jobs[job_id]["state"] == "cancelled":
+                            state = "cancelled"
+                            break
+                    listed = subprocess.run([cli, "sandbox", "list", "--output", "json"],
+                                            capture_output=True, text=True, timeout=10,
+                                            env=env, check=False)
+                    if listed.returncode == 0:
+                        found = next((item for item in json.loads(listed.stdout)
+                                      if item.get("name") == sandbox_name and item.get("phase") == "Ready"), None)
+                        if found:
+                            sandbox_id = found["id"]
+                            break
+                    time.sleep(0.25)
+                if state != "cancelled":
+                    if sandbox_id is None:
+                        raise RuntimeError("OpenShell employee sandbox did not become ready")
+                    container = "openshell-default--" + sandbox_name + "-" + sandbox_id
+                    inspected = subprocess.run(["docker", "inspect", container],
+                                               capture_output=True, text=True,
+                                               timeout=10, env=env, check=True)
+                    info = json.loads(inspected.stdout)[0]
+                    validate_worker_attachment(info, self._network_id)
+                    if (info.get("Image") != _image_digest(self.config["image"])
+                            or info.get("HostConfig", {}).get("Privileged") is not False):
+                        raise RuntimeError("OpenShell employee image identity mismatch")
+                    self._validate_conversation_mount(info, volume_name)
+                    if not self._inspect_conversation_volume(
+                            volume_name, self._volume_labels(run_id, conversation_id)):
+                        raise RuntimeError("OpenShell employee conversation volume disappeared")
+                    policy = subprocess.run([cli, "policy", "get", sandbox_name, "--full",
+                                             "--output", "json"], capture_output=True, text=True,
+                                            timeout=15, env=env, check=True)
+                    effective_policy(policy.stdout, approved_policy, sandbox_name)
+                    process = subprocess.Popen([cli, "sandbox", "exec", "--name", sandbox_name,
+                        "--timeout", str(timeout), "--no-tty", "--", "python",
+                        "/opt/vibesecur/worker_runtime/run.py", "-"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, env=env)
+                    with self._lock:
+                        self._jobs[job_id]["process"] = process
+                    event_count, assistant, sdk_error = self._stream_worker_output(
+                        process, mission, token, events_path, timeout, on_event)
+                    exit_code = process.returncode
+                    state = "finished" if exit_code == 0 and assistant else "failed"
+        except subprocess.TimeoutExpired:
+            state = "timeout"
+            if process is not None:
+                process.kill()
+                process.wait(timeout=5)
+                exit_code = process.returncode
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+            if state != "cancelled":
+                state = "failed"
+            # Only the exception class is retained; SDK/model content is private.
+            error_type = type(exc).__name__
+        finally:
+            if creation_attempted:
+                try:
+                    self._remove_container(job_id)
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                    cleanup_uncertain = True
+                    state = "failed"
+                else:
+                    fence_path.unlink(missing_ok=True)
+            else:
+                fence_path.unlink(missing_ok=True)
+        with self._lock:
+            if self._jobs[job_id]["state"] == "cancelled" and not cleanup_uncertain:
+                state = "cancelled"
+        result = {"jobId": job_id, "taskId": task_id, "turnId": turn_id,
+                  "state": state, "exitCode": exit_code, "eventsPath": str(events_path),
+                  "eventCount": event_count, "conversationId": conversation_id,
+                  "conversationVolume": volume_name}
+        if cleanup_uncertain:
+            result["cleanupUncertain"] = True
+            result["errorType"] = "SandboxCleanupUnavailable"
+        if state == "finished":
+            result["assistantText"] = assistant
+        elif not cleanup_uncertain and sdk_error is not None:
+            result["errorType"] = sdk_error
+        elif not cleanup_uncertain and "error_type" in locals():
+            result["errorType"] = error_type
+        with self._lock:
+            self._jobs[job_id].update(state=state, result=result)
+        on_event({"kind": "worker.finished", "jobId": job_id, "taskId": task_id,
+                  "turnId": turn_id, "state": state, "exitCode": exit_code,
+                  "source": "host_supervisor"})
+        return result
+
+    def _remove_container(self, job_id: str) -> None:
+        if self.config["runtime"] == "openshell":
+            removed = subprocess.run([self.config["openshellCli"], "sandbox", "delete", "vw-" + job_id[-16:]],
+                           capture_output=True, timeout=20, check=False,
+                           env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                                "HOME": os.environ.get("HOME", "/home/demo")})
+            if removed.returncode:
+                raise RuntimeError("OpenShell sandbox deletion unavailable")
+            return
+        subprocess.run(["docker", "rm", "-f", job_id], capture_output=True,
+                       timeout=10, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, check=False)
+
+    def status(self, job_id: str) -> dict:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            return {"jobId": job_id, "state": job["state"], "result": job.get("result")}
+
+    def cancel(self, job_id: str) -> None:
+        if not _JOB_ID.fullmatch(job_id):
+            raise ValueError("Invalid worker job ID")
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                # A host restart drops the in-memory map but not necessarily
+                # the Docker container. The UUID-scoped name is safe to fence.
+                self._remove_container(job_id)
+                if self.config["runtime"] == "openshell":
+                    self._clear_cleanup_fence_for_job(job_id)
+                return
+            if job["state"] != "running":
+                return
+            job["state"] = "cancelled"
+        self._remove_container(job_id)
+        if self.config["runtime"] == "openshell":
+            self._clear_cleanup_fence_for_job(job_id)
+        if job.get("process") is not None:
+            job["process"].terminate()
+
+    def collect_artifacts(self, job_id: str) -> dict:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            return {"eventsPath": job["eventsPath"], "artifactDir": job["artifactDir"]}

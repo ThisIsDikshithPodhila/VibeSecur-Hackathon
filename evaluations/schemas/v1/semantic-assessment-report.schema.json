@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vibesecur.semantic-assessment-report.v1",
+  "description": "Assessment outputs and gold labels are separate; gold labels must never enter inferenceInput.",
+  "type": "object",
+  "required": ["schemaVersion", "status", "sampleSize", "pairs"],
+  "properties": {
+    "schemaVersion": {"const": "vibesecur.semantic-assessment-report.v1"},
+    "status": {"enum": ["completed", "partial", "not_run"]},
+    "sampleSize": {"type": "integer", "minimum": 0},
+    "pairs": {"type": "array", "items": {"type": "object", "required": ["pairId", "inferenceInputDigest", "inferenceOutput", "goldLabel"], "properties": {"inferenceInputDigest": {"type": "string"}, "goldLabel": {"type": "string"}, "inferenceInput": {"type": "object", "not": {"anyOf": [{"required": ["goldLabel"]}, {"required": ["label"]}, {"required": ["expected"]}]}}}}}
+  }
+}

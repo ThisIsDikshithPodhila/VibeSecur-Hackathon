@@ -1,0 +1,5 @@
+# Azure x86_64 / CPython 3.12 CPU child only. Resolve all wheels on that
+# target runtime, then install the generated hash lock before model loading.
+laya==0.3.20
+setuptools==84.0.0
+torch @ https://download.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl

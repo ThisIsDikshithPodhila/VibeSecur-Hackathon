@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "vibesecur.evaluation-config.v1",
+  "treatment": "deterministic_laya",
+  "adapter": "evaluations.adapters.store_payment"
+}

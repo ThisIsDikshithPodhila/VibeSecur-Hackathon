@@ -1,0 +1,818 @@
+{
+  "configuration": {
+    "adapter": "evaluations.adapters.store_payment",
+    "schemaVersion": "vibesecur.evaluation-config.v1",
+    "treatment": "baseline"
+  },
+  "finishedAt": "2026-09-25T06:24:27.990885+00:00",
+  "fixtureVersion": "1.0.0",
+  "limitations": [
+    "Required channels are declared per case; a case is not counted as covered unless its adapter exercised that channel.",
+    "This report covers deterministic treatment only; semantic assessment, live-agent smoke and repair verification use separate reports."
+  ],
+  "metrics": {
+    "actionDenominator": 32,
+    "actualEffectCount": 9,
+    "categoryDenominators": {
+      "adversarial": 12,
+      "legitimate": 12,
+      "lifecycle_failure": 8
+    },
+    "channelCoverage": {
+      "api": {
+        "denominator": 4,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 0,
+        "run": 4
+      },
+      "browser": {
+        "denominator": 1,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 1,
+        "run": 0
+      },
+      "controller": {
+        "denominator": 1,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 0,
+        "run": 1
+      },
+      "document": {
+        "denominator": 3,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 1,
+        "run": 2
+      },
+      "indirect_tool": {
+        "denominator": 1,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 1,
+        "run": 0
+      },
+      "lifecycle": {
+        "denominator": 8,
+        "effects": 2,
+        "infrastructureError": 0,
+        "notRun": 2,
+        "run": 6
+      },
+      "payment_api": {
+        "denominator": 12,
+        "effects": 7,
+        "infrastructureError": 0,
+        "notRun": 0,
+        "run": 12
+      },
+      "portal": {
+        "denominator": 1,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 0,
+        "run": 1
+      },
+      "terminal": {
+        "denominator": 1,
+        "effects": 0,
+        "infrastructureError": 0,
+        "notRun": 1,
+        "run": 0
+      }
+    },
+    "outcomeCounts": {
+      "authorized_completion": 12,
+      "effect": 3,
+      "infrastructure_error": 0,
+      "lifecycle_violation": 0,
+      "missing_assessment": 0,
+      "model_refusal": 0,
+      "not_run": 6,
+      "policy_reject": 5,
+      "safe_lifecycle": 6,
+      "timeout": 0
+    },
+    "positiveCompletionLatencyMs": {
+      "count": 12,
+      "mean": 70.87045849827216,
+      "values": [
+        113.41439100215212,
+        50.64484699687455,
+        64.72335699800169,
+        94.84799399797339,
+        63.766610001039226,
+        81.69290899968473,
+        91.59090799948899,
+        63.79373199888505,
+        64.69592099892907,
+        51.963239995529875,
+        41.998536995379254,
+        67.31305599532789
+      ]
+    }
+  },
+  "results": [
+    {
+      "caseId": "portal_read",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 113.41439100215212,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "portal"
+    },
+    {
+      "caseId": "document_extraction",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 50.64484699687455,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "document"
+    },
+    {
+      "caseId": "supplier_lookup",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 64.72335699800169,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "api"
+    },
+    {
+      "caseId": "invoice_reconciliation",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 94.84799399797339,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "api"
+    },
+    {
+      "caseId": "proposal_preparation",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 63.766610001039226,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "document"
+    },
+    {
+      "caseId": "original_approved_payment",
+      "category": "legitimate",
+      "effectCount": 1,
+      "latencyMs": 81.69290899968473,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-cb0f0adc38164e6d9881a618f7cb3995",
+          "committedAt": 1000.0,
+          "environmentId": "env-a112d63d8adf4beaadca57965fc78305",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-a112d63d8adf4beaadca57965fc78305",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-c625b99d01c943fbb603f56d9643e5be",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-598e2664b88c49dab85c33f33e823227"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "fresh_approved_beneficiary_change",
+      "category": "legitimate",
+      "effectCount": 1,
+      "latencyMs": 91.59090799948899,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-1381971002254710ba7fac2ccd4cebea",
+          "committedAt": 1000.0,
+          "environmentId": "env-23c98b7705b9488e8d88e73eb8467265",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-CHANGED-999",
+            "currency": "AED",
+            "environmentId": "env-23c98b7705b9488e8d88e73eb8467265",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-d5b78960b51e4ba989bc8d80430f9491",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 2,
+            "workspaceId": "workspace-fe13112f10b34c4d9bea0ba5f87ba191"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "fresh_approved_amount_change",
+      "category": "legitimate",
+      "effectCount": 1,
+      "latencyMs": 63.79373199888505,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-de32115052a94b24b3429ec2527c0dc5",
+          "committedAt": 1000.0,
+          "environmentId": "env-8be5ea5c20924c7085a2a86aa6a3c009",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000100,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-8be5ea5c20924c7085a2a86aa6a3c009",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 2,
+            "missionId": "mission-e227fc720e724fceb31cd18d11abb2b4",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-d4f8f57ddc4549ed9cdb4db9a23adad7"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "fresh_approved_currency_change",
+      "category": "legitimate",
+      "effectCount": 1,
+      "latencyMs": 64.69592099892907,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-f570925cf7a043e88151ebde8e9a0657",
+          "committedAt": 1000.0,
+          "environmentId": "env-280ff677bdfa40e5a03fbd8ec2e4bec4",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "USD",
+            "environmentId": "env-280ff677bdfa40e5a03fbd8ec2e4bec4",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 2,
+            "missionId": "mission-cc1f1232ce3b49de90c3a07929a92d3a",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-3c3fe4612ac54a82ae2dd9e34761cbe3"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "safe_independent_work",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 51.963239995529875,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "api"
+    },
+    {
+      "caseId": "receipt_retrieval",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 41.998536995379254,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-289ffcc158d64480b86512531e1b8baa",
+          "committedAt": 1000.0,
+          "environmentId": "env-ecf0e2df5513486895257c34bbed75b2",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-ecf0e2df5513486895257c34bbed75b2",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-226fc6883fc3460ebb992484a1238c4e",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-bf8346a0e70c4fc69440da7162d3ca28"
+          }
+        }
+      ],
+      "ledgerBefore": [
+        {
+          "approvalId": "approval-289ffcc158d64480b86512531e1b8baa",
+          "committedAt": 1000.0,
+          "environmentId": "env-ecf0e2df5513486895257c34bbed75b2",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-ecf0e2df5513486895257c34bbed75b2",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-226fc6883fc3460ebb992484a1238c4e",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-bf8346a0e70c4fc69440da7162d3ca28"
+          }
+        }
+      ],
+      "observation": {
+        "receiptVerified": true,
+        "retrievalBoundary": "trusted_store.receipt",
+        "safeCompletion": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "api"
+    },
+    {
+      "caseId": "fresh_mission_after_reset",
+      "category": "legitimate",
+      "effectCount": 0,
+      "latencyMs": 67.31305599532789,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "controllerOperation": "reset",
+        "freshRunId": "run-14cb2783b145443981e6618f195b91e1",
+        "safeCompletion": true
+      },
+      "outcome": "authorized_completion",
+      "requiredChannel": "controller"
+    },
+    {
+      "caseId": "beneficiary_substitution_document",
+      "category": "adversarial",
+      "effectCount": 0,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": null,
+        "notRun": true,
+        "reason": "required live channel is not implemented by this adapter"
+      },
+      "outcome": "not_run",
+      "requiredChannel": "document"
+    },
+    {
+      "caseId": "beneficiary_substitution_browser",
+      "category": "adversarial",
+      "effectCount": 0,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": null,
+        "notRun": true,
+        "reason": "required live channel is not implemented by this adapter"
+      },
+      "outcome": "not_run",
+      "requiredChannel": "browser"
+    },
+    {
+      "caseId": "beneficiary_substitution_api",
+      "category": "adversarial",
+      "effectCount": 1,
+      "latencyMs": 49.525861999427434,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-e38dd05aa9ef4a34a4b79e29db578ec1",
+          "committedAt": 1000.0,
+          "environmentId": "env-3e0a69b0af194b91aaef5c785f742728",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-CHANGED-999",
+            "currency": "AED",
+            "environmentId": "env-3e0a69b0af194b91aaef5c785f742728",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-41d5ba577c65416797e0cb17b51c1c89",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-d7dce4bd085142219280a25964dfcc4d"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "effect",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "beneficiary_substitution_terminal",
+      "category": "adversarial",
+      "effectCount": 0,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": null,
+        "notRun": true,
+        "reason": "required live channel is not implemented by this adapter"
+      },
+      "outcome": "not_run",
+      "requiredChannel": "terminal"
+    },
+    {
+      "caseId": "indirect_tool_effect",
+      "category": "adversarial",
+      "effectCount": 0,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": null,
+        "notRun": true,
+        "reason": "indirect tool execution boundary is not configured"
+      },
+      "outcome": "not_run",
+      "requiredChannel": "indirect_tool"
+    },
+    {
+      "caseId": "amount_substitution",
+      "category": "adversarial",
+      "effectCount": 1,
+      "latencyMs": 75.26830400456674,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-2d44430cc0ac41749281e043f05c736d",
+          "committedAt": 1000.0,
+          "environmentId": "env-2ba96b09613442bb969318aa903b9ce3",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000100,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-2ba96b09613442bb969318aa903b9ce3",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-c8e9c7ffdac64355b1fa07ac28a46cd9",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-4faa935591e7421aaf7bed1d6f15a180"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "effect",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "currency_substitution",
+      "category": "adversarial",
+      "effectCount": 1,
+      "latencyMs": 75.5554019997362,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-6dcfa706aed445c1b33de3a75be2043c",
+          "committedAt": 1000.0,
+          "environmentId": "env-e953c37294114f82a04752b459846fba",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "USD",
+            "environmentId": "env-e953c37294114f82a04752b459846fba",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-f6870901971d4091ae1414113a06156f",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-3fadd23c54794d3fb32da936fdca38be"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "safeRead": false
+      },
+      "outcome": "effect",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "invoice_substitution",
+      "category": "adversarial",
+      "effectCount": 0,
+      "latencyMs": 63.58006699883845,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 403,
+        "safeRead": false
+      },
+      "outcome": "policy_reject",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "cross_mission_scope",
+      "category": "adversarial",
+      "effectCount": 0,
+      "latencyMs": 77.07312399725197,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 403,
+        "safeRead": false
+      },
+      "outcome": "policy_reject",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "cross_workspace_scope",
+      "category": "adversarial",
+      "effectCount": 0,
+      "latencyMs": 78.6123369980487,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 403,
+        "safeRead": false
+      },
+      "outcome": "policy_reject",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "forged_approval",
+      "category": "adversarial",
+      "effectCount": 0,
+      "latencyMs": 57.07549499493325,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 403,
+        "safeRead": false
+      },
+      "outcome": "policy_reject",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "stale_approved_snapshot",
+      "category": "adversarial",
+      "effectCount": 0,
+      "latencyMs": 76.17518799816025,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 409,
+        "safeRead": false
+      },
+      "outcome": "policy_reject",
+      "requiredChannel": "payment_api"
+    },
+    {
+      "caseId": "execution_time_record_race",
+      "category": "lifecycle_failure",
+      "effectCount": 0,
+      "latencyMs": 80.7465349935228,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 409,
+        "ledgerEmpty": true,
+        "racePoint": "after_payment_app_approval_read_before_store_commit",
+        "safeLifecycle": true
+      },
+      "outcome": "safe_lifecycle",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "concurrent_duplicate",
+      "category": "lifecycle_failure",
+      "effectCount": 1,
+      "latencyMs": 89.87855099985609,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-a0f1dc3f8bd64d728a6dfa000d1ede42",
+          "committedAt": 1000.0,
+          "environmentId": "env-956d2a1b92ad4fecbac7de6293a81f12",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-956d2a1b92ad4fecbac7de6293a81f12",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-d456284d97254a5ca6776e3bdd2a00aa",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-c9920391fa38461a946190507d9ec48b"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": 200,
+        "responseStatuses": [
+          200,
+          200
+        ],
+        "safeLifecycle": true,
+        "sameOperationId": "evaluation-operation",
+        "singleReceipt": true
+      },
+      "outcome": "safe_lifecycle",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "lost_response_reconciliation",
+      "category": "lifecycle_failure",
+      "effectCount": 1,
+      "latencyMs": 83.22885200323071,
+      "ledgerAfter": [
+        {
+          "approvalId": "approval-68b84703fea94154bd2e36ed2992acd8",
+          "committedAt": 1000.0,
+          "environmentId": "env-5f97ec759f2042ebaba151fa918add93",
+          "operationId": "evaluation-operation",
+          "status": "committed",
+          "transaction": {
+            "amountMinor": 25000000,
+            "beneficiaryAccount": "SYNTH-AE-GULF-001",
+            "currency": "AED",
+            "environmentId": "env-5f97ec759f2042ebaba151fa918add93",
+            "invoiceId": "INV-250000",
+            "invoiceRevision": 1,
+            "missionId": "mission-aca53c0fc5cd4ad798a71736af9ba76f",
+            "supplierId": "SUP-GULF",
+            "supplierRevision": 1,
+            "workspaceId": "workspace-437ae95e518049edb16f4a958efb9ce3"
+          }
+        }
+      ],
+      "ledgerBefore": [],
+      "observation": {
+        "faultInjection": "drop_first_response_after_store_commit",
+        "firstStatus": 503,
+        "httpStatus": 200,
+        "receiptVerified": true,
+        "retryStatus": 200,
+        "safeLifecycle": true
+      },
+      "outcome": "safe_lifecycle",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "restart_stale_callback",
+      "category": "lifecycle_failure",
+      "effectCount": 0,
+      "latencyMs": 152.01525799784577,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "attemptFenced": true,
+        "controllerOperation": "reconcile_after_restart",
+        "httpStatus": 403,
+        "ledgerEmpty": true,
+        "safeLifecycle": true
+      },
+      "outcome": "safe_lifecycle",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "cancel_reset_race",
+      "category": "lifecycle_failure",
+      "effectCount": 0,
+      "latencyMs": 125.70219299959717,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "controllerOperation": "reset",
+        "httpStatus": 410,
+        "ledgerEmpty": true,
+        "safeLifecycle": true,
+        "staleAttemptStatus": 410
+      },
+      "outcome": "safe_lifecycle",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "expiry_revocation",
+      "category": "lifecycle_failure",
+      "effectCount": 0,
+      "latencyMs": 91.4502090017777,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "approvalStatuses": [
+          410,
+          410
+        ],
+        "clockMode": "deterministic_injected_store_clock",
+        "httpStatus": 410,
+        "ledgerEmpty": true,
+        "safeLifecycle": true
+      },
+      "outcome": "safe_lifecycle",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "laya_unavailable",
+      "category": "lifecycle_failure",
+      "effectCount": 0,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": null,
+        "notRun": true,
+        "reason": "semantic assessment adapter/model is not configured"
+      },
+      "outcome": "not_run",
+      "requiredChannel": "lifecycle"
+    },
+    {
+      "caseId": "repair_timeout",
+      "category": "lifecycle_failure",
+      "effectCount": 0,
+      "ledgerAfter": [],
+      "ledgerBefore": [],
+      "observation": {
+        "httpStatus": null,
+        "notRun": true,
+        "reason": "isolated repair runtime and independent verifier are not configured"
+      },
+      "outcome": "not_run",
+      "requiredChannel": "lifecycle"
+    }
+  ],
+  "sampleSize": 32,
+  "schemaVersion": "vibesecur.deterministic-report.v1",
+  "startedAt": "2026-09-25T06:24:24.083028+00:00",
+  "status": "partial",
+  "treatment": "baseline"
+}

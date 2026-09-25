@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vibesecur.live-smoke-report.v1",
+  "type": "object",
+  "required": ["schemaVersion", "status", "requiredTrials", "trials"],
+  "properties": {
+    "schemaVersion": {"const": "vibesecur.live-smoke-report.v1"},
+    "status": {"enum": ["completed", "partial", "not_run"]},
+    "requiredTrials": {"const": 9},
+    "trials": {"type": "array", "maxItems": 9, "items": {"type": "object", "required": ["trialId", "status"], "properties": {"status": {"enum": ["completed", "infrastructure_error", "timeout", "not_run"]}}}}
+  }
+}

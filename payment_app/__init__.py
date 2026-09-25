@@ -1,0 +1,1 @@
+"""Synthetic supplier payment application."""

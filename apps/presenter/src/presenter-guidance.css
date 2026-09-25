@@ -1,0 +1,68 @@
+/* A reading cue for the saved run. The existing commands remain in their chapters. */
+.presenter-guidance {
+  --cue-accent: var(--muted);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.presenter-guidance[data-tone='attention'] { --cue-accent: #ffce97; }
+.presenter-guidance[data-tone='complete'] { --cue-accent: var(--green); }
+.presenter-guidance[data-tone='complete'] .presenter-guidance__next { border-color: #42694e; background: var(--green-low); color: var(--green); }
+/* Keep the saved run's next step ahead of starting another demonstration. */
+.hero.has-run .primary { background: var(--low); border-color: var(--line-strong); color: var(--text); }
+.presenter-guidance__copy { min-width: 0; }
+.presenter-guidance__context { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; }
+.presenter-guidance__context .eyebrow { color: var(--cue-accent); }
+.presenter-guidance__state { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; color: var(--quiet); font: 400 11px/1.5 var(--mono); }
+.presenter-guidance__state strong { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+.presenter-guidance__message h2 { margin: 0 0 8px; font-size: clamp(21px, 2vw, 26px); line-height: 1.25; letter-spacing: -.025em; font-weight: 600; color: var(--text); text-wrap: balance; }
+.presenter-guidance__message p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 70ch; min-block-size: 3em; }
+.presenter-guidance__controls { display: flex; flex-direction: column; align-items: stretch; min-width: 216px; max-width: 288px; }
+.presenter-guidance__next { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 48px; padding: 12px 16px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--low); color: var(--text); font-size: 13px; line-height: 1.5; font-weight: 600; text-align: left; }
+.presenter-guidance__next > span { min-width: 0; overflow-wrap: anywhere; }
+.presenter-guidance__next:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+.presenter-guidance__next svg { color: var(--cue-accent); transition: transform .18s var(--ease); }
+.presenter-guidance__controls .text-button { justify-content: flex-end; font-size: 12px; min-height: 44px; }
+.presenter-guidance__controls .text-button svg { transition: transform .2s var(--ease); }
+
+/* Match chapter destinations: sticky nav, top inset and focus-ring clearance. */
+#protected-transaction, #protected-receipt, #repair-record, #verifier-record, #resume-control { scroll-margin-block-start: 102px; }
+
+.record-milestones { margin: 16px 0 8px; }
+.record-milestones > div { display: grid; grid-template-columns: minmax(96px, .8fr) minmax(0, 1.5fr); gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.5; }
+.record-milestones dt { color: var(--quiet); }
+.record-milestones dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.record-context { color: var(--quiet); font-size: 12px; line-height: 1.5; }
+
+@media (hover: hover) and (pointer: fine) {
+  .presenter-guidance__next:hover { background: var(--high); border-color: var(--cue-accent); }
+  .presenter-guidance__next:hover svg { transform: translateX(3px); }
+  .hero.has-run .primary:hover:not(:disabled) { background: var(--high); border-color: var(--green); }
+}
+
+@media (max-width: 900px) {
+  .presenter-guidance { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
+  .presenter-guidance__controls { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; min-width: 0; max-width: none; }
+  .presenter-guidance__next { min-width: 0; }
+  .presenter-guidance__controls .text-button { flex-shrink: 0; }
+}
+
+@media (max-width: 480px) {
+  .presenter-guidance { padding: 16px 12px; }
+  .presenter-guidance__controls { flex-wrap: wrap; gap: 0 12px; }
+  .presenter-guidance__next { width: 100%; }
+  .presenter-guidance__controls .text-button { margin-left: auto; }
+}
+
+@media (max-width: 640px) {
+  #protected-transaction, #protected-receipt, #repair-record, #verifier-record, #resume-control { scroll-margin-block-start: 84px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .presenter-guidance__message, .presenter-guidance__message > div, .presenter-guidance__next svg { transform: none !important; }
+  .presenter-guidance *, .presenter-guidance *::before, .presenter-guidance *::after { animation: none !important; transition: none !important; }
+}
