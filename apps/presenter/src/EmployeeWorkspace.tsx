@@ -1,9 +1,9 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { AlertCircle, ArrowRight, BriefcaseBusiness, Check, Circle, FileText, LogOut, MessageCircle, Minus, MoreHorizontal, RefreshCw, UserRound } from 'lucide-react';
+import { AlertCircle, ArrowRight, BriefcaseBusiness, Check, Circle, FileText, MessageCircle, Minus, MoreHorizontal, RefreshCw, UserRound } from 'lucide-react';
 import type { Run } from './types';
 import { AssistantConversation, type ConversationMarker } from './AssistantConversation';
 import {
-  activityFromRun, conversationFromRun, incidentOutcomeFromRun, incidentDispositionFromRun,
+  activityFromRun, conversationFromRun, incidentOutcomeFromRun, incidentDispositionFromRun, workflowSuggestions,
   paymentReceiptsFromRun, maskAccount, modeLabel, runCreatedLabel, stateLabel, taskBriefFromRun,
   type EmployeeActivity, type EmployeeConnectionStatus,
 } from './employeeView';
@@ -35,7 +35,7 @@ function ActivityItem({ activity }: { activity: EmployeeActivity }) {
   </li>;
 }
 
-export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = false, error, notice, rightPanel, onSend, onStart, onSelectRun, onViewIncident, onReset, onRefresh, onSignOut }: EmployeeWorkspaceProps) {
+export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = false, error, notice, rightPanel, onSend, onStart, onSelectRun, onViewIncident, onReset, onRefresh }: EmployeeWorkspaceProps) {
   const [activeSection, setActiveSection] = useState<'chat' | 'work' | 'activity'>('chat');
   const [modeToStart, setModeToStart] = useState<EmployeeRunMode>('live');
   const [startPending, setStartPending] = useState(false);
@@ -44,6 +44,7 @@ export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = fal
   const conversation = useMemo(() => conversationFromRun(run), [run]);
   const brief = useMemo(() => taskBriefFromRun(run), [run]);
   const incident = useMemo(() => incidentOutcomeFromRun(run), [run]);
+  const suggestions = useMemo(() => workflowSuggestions(run), [run]);
   const receipts = useMemo(() => paymentReceiptsFromRun(run), [run]);
   const disposition = incidentDispositionFromRun(run);
   const isOffline = connectionStatus !== 'connected';
@@ -69,8 +70,8 @@ export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = fal
   }
   const viewIncident = () => void perform(onViewIncident, 'The incident details could not be opened.');
   const blockedCard = incident.status === 'blocked' ? <article className="employee-blocked-card" aria-label="Blocked payment attempt">
-    <div className="employee-blocked-card__header"><span className="employee-stop-icon" aria-hidden="true"><Minus size={22}/></span><h2>VibeSecur blocked a payment change</h2><time>{incident.timeLabel || 'Recorded incident'}</time></div>
-    <div className="employee-blocked-card__body"><p>The attempted payment used a different bank account from the one approved. VibeSecur blocked this attempt; no payment reached the attempted account.</p><button className="employee-link-button" type="button" onClick={viewIncident}>View what happened <ArrowRight size={17} aria-hidden="true"/></button></div>
+    <div className="employee-blocked-card__header"><span className="employee-stop-icon" aria-hidden="true"><Minus size={22}/></span><h2>VibeSecur stopped an action</h2><time>{incident.timeLabel || 'Recorded incident'}</time></div>
+    <div className="employee-blocked-card__body"><p>Maya tried to send the approved payment to a different bank account. VibeSecur blocked it — no payment was sent — and told her to use the approved account.</p><button className="employee-link-button" type="button" onClick={viewIncident}>View what happened <ArrowRight size={17} aria-hidden="true"/></button></div>
     <dl><div><dt>{incident.attemptedAmount ? 'Attempted amount' : 'Invoice amount'}</dt><dd>{incident.attemptedAmount || brief.amount || 'Not recorded'}</dd></div><div><dt>Attempted account</dt><dd>{maskAccount(incident.attemptedAccount)}</dd></div><div><dt>Approved account</dt><dd>{maskAccount(incident.approvedAccount)}</dd></div></dl>
   </article> : null;
   const markers: ConversationMarker[] = incident.status === 'blocked' ? [{ id: incident.id, sequence: incident.sequence ?? Number.MAX_SAFE_INTEGER - 1, content: blockedCard }] : [];
@@ -83,12 +84,12 @@ export function EmployeeWorkspace({ run, savedRuns, connectionStatus, busy = fal
     <header className="employee-topbar">
       <div className="employee-brand" aria-label="VibeSecur"><span className="employee-brand__mark" aria-hidden="true"><MessageCircle size={22}/></span><span>VibeSecur</span></div>
       <nav className="employee-nav" aria-label="Main navigation">{([['chat', 'Chat'], ['work', 'Work'], ['activity', 'Activity']] as const).map(([id, label]) => <button key={id} type="button" className={activeSection === id ? 'is-active' : ''} aria-current={activeSection === id ? 'page' : undefined} onClick={() => setActiveSection(id)}>{label}</button>)}</nav>
-      <div className="employee-topbar__actions"><span className={`employee-security-mark is-${connectionStatus}`} role="status"><span aria-hidden="true"/>{connectionStatus === 'connected' ? 'VibeSecur ON' : connectionStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'}</span><details className="employee-account-menu"><summary aria-label="Account menu"><UserRound size={20} aria-hidden="true"/></summary><button type="button" onClick={() => void perform(onSignOut, 'Sign out did not complete.')}><LogOut size={16}/>Sign out</button></details></div>
+      <div className="employee-topbar__actions"><span className={`employee-security-mark is-${connectionStatus}`} role="status"><span aria-hidden="true"/>{connectionStatus === 'connected' ? 'VibeSecur ON' : connectionStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'}</span><span className="employee-account-menu" aria-hidden="true"><UserRound size={20}/></span></div>
     </header>
     <div className={`employee-layout${rightPanel ? ' has-control-panel' : ''}`}>
       <section className="employee-chat-panel" aria-labelledby="employee-chat-title">
         <div className="employee-chat-header"><div className="employee-avatar" aria-hidden="true">M</div><div className="employee-chat-header__copy"><h1 id="employee-chat-title">Maya</h1><p>Procurement Agent</p><p className="employee-maya-description">I help review supplier invoices and prepare payments.</p></div><button className="employee-icon-button employee-work-settings" type="button" aria-label="Open work settings" onClick={() => setActiveSection('work')}><MoreHorizontal size={20}/></button></div>
-        {activeSection === 'chat' ? <AssistantConversation key={run?.runId || 'new'} messages={conversation} markers={markers} replay={replay} busy={busy || queued} offline={isOffline} running={running} onSend={onSend} feedback={feedback} empty={<div className="employee-empty-state"><MessageCircle size={28} aria-hidden="true"/><h2>What would you like to work on?</h2><p>{run ? 'Send Maya a message to continue this work.' : 'Send Maya a message or choose a suggestion below.'}</p>{replay && <p>Deterministic replay · no conversation was saved.</p>}</div>}/> : <div className="employee-chat-body employee-history">
+        {activeSection === 'chat' ? <AssistantConversation key={run?.runId || 'new'} messages={conversation} markers={markers} replay={replay} busy={busy || queued} offline={isOffline} running={running} suggestions={suggestions} onSend={onSend} feedback={feedback} empty={<div className="employee-empty-state"><MessageCircle size={28} aria-hidden="true"/><h2>What would you like to work on?</h2><p>{run ? 'Send Maya a message to continue this work.' : 'Send Maya a message or choose a suggestion below.'}</p>{replay && <p>Deterministic replay · no conversation was saved.</p>}</div>}/> : <div className="employee-chat-body employee-history">
           <div className="employee-subheading"><h2>{activeSection === 'work' ? 'Saved work' : 'Recorded activity'}</h2><button className="employee-icon-button" type="button" aria-label="Refresh saved runs" onClick={() => void perform(onRefresh, 'Saved work could not be refreshed.')}><RefreshCw size={18}/></button></div>
           {activeSection === 'work' ? <><label className="employee-run-select-label" htmlFor="employee-saved-run">Open a saved run</label><select id="employee-saved-run" value={run?.runId || ''} onChange={event => selectRun(event.target.value)}><option value="">Select saved work</option>{savedRuns.map(item => <option key={item.runId} value={item.runId}>{modeLabel(item.mode)} · {runCreatedLabel(item)}</option>)}</select><ul className="employee-run-list">{savedRuns.map(item => <li key={item.runId}><button type="button" onClick={() => selectRun(item.runId)} aria-current={item.runId === run?.runId ? 'true' : undefined}><strong>{modeLabel(item.mode)}</strong><span>{runCreatedLabel(item)} · {stateLabel(item.state)}</span></button></li>)}</ul><details className="employee-run-settings"><summary>Run settings</summary><div className="employee-start-controls"><label htmlFor="employee-run-mode">Run mode</label><select id="employee-run-mode" value={modeToStart} onChange={event => setModeToStart(event.target.value as EmployeeRunMode)}><option value="live">Live agent</option><option value="replay">Deterministic replay</option></select><button type="button" className="employee-primary-button" disabled={busy || startPending || isOffline} onClick={() => void startRun()}>{startPending ? 'Starting…' : 'Start work session'}</button></div>{run && onReset && <button className="employee-reset-button" type="button" onClick={onReset}>Reset this run</button>}</details></> : <ol className="employee-timeline">{feedItems.map(item => <ReactNodeRow key={item.id}>{item.content}</ReactNodeRow>)}</ol>}
           {feedback}

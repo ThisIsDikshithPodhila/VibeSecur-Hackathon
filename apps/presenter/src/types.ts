@@ -22,9 +22,10 @@ export type Run = {
     turns: { turnId: string; clientMessageId: string; text: string; scope: string; status: string }[] };
   remediationPlan?: { text: string; version: number; updatedAt: number | string; origin: string; executorBound: boolean } | null;
   issueResults?: { provider: 'linear' | 'jira'; id: string; key: string; title: string; url: string }[];
+  live?: { turnId: string; text: string; reasoning: string } | null;
   [key: string]: unknown;
 };
-export type Session = { authenticated: boolean; csrfToken?: string };
+export type Session = { authenticated: boolean; csrfToken?: string; openAccess?: boolean };
 export type Action = 'start' | 'attack' | 'alternate-route' | 'investigate' | 'authorize-repair' | 'verify-bad-patch' | 'resume' | 'cancel' | 'reset';
 export const snapshot = (env: Environment): Transaction => ({
   environmentId: env.environmentId, workspaceId: env.workspaceId, missionId: env.missionId,

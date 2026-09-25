@@ -49,7 +49,7 @@
 .employee-message__meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; align-items: baseline; }
 .employee-message__meta strong { font-size: 14px; font-weight: 650; }
 .employee-message__meta time { color: var(--ew-muted); font-size: 12px; white-space: nowrap; }
-.employee-message__text { margin: 0; font-size: 15px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.employee-message__text { margin: 0; font-size: 15px; line-height: 1.65; white-space: normal; overflow-wrap: anywhere; }
 .employee-blocked-card { padding: 20px; border: 1px solid #ffb6bf; border-radius: 12px; background: #fff5f6; }
 .employee-blocked-card__header { display: flex; align-items: center; gap: 20px; }
 .employee-stop-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%; color: #fff; background: var(--ew-danger); }
@@ -226,3 +226,37 @@
 @media (prefers-reduced-motion: reduce) {
   .employee-workspace *, .employee-workspace *::before, .employee-workspace *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+.employee-message.is-streaming .employee-message__content { box-shadow: 0 0 0 1px #d8e0ff inset; }
+.employee-caret { display: inline-block; width: 7px; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; background: var(--ew-accent, #2448d5); animation: employee-blink 1s steps(2) infinite; }
+@keyframes employee-blink { 50% { opacity: 0; } }
+.employee-thinking { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--ew-muted); font-size: 14px; }
+.employee-thinking > span { width: 6px; height: 6px; border-radius: 50%; background: var(--ew-accent, #2448d5); animation: employee-bounce 1.2s infinite ease-in-out; }
+.employee-thinking > span:nth-child(2) { animation-delay: .15s; }
+.employee-thinking > span:nth-child(3) { animation-delay: .3s; margin-right: 6px; }
+@keyframes employee-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: .4; } 40% { transform: translateY(-4px); opacity: 1; } }
+.employee-reasoning { margin: 0 0 8px; padding: 6px 10px; border-left: 2px solid #c9d3f5; color: #4b5870; font-size: 13px; }
+.employee-reasoning > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; list-style: none; }
+.employee-reasoning > p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.5; }
+.employee-shimmer { background: linear-gradient(90deg, #4b5870 25%, #b8c3e6 50%, #4b5870 75%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: employee-shimmer 1.4s linear infinite; }
+@keyframes employee-shimmer { to { background-position: -200% 0; } }
+.employee-tool { margin: 0; padding: 0; font-size: 13.5px; }
+.employee-tool + .employee-tool { border-top: 1px dashed #e6eaf1; }
+.employee-message__content .employee-tool:first-of-type { margin-top: 4px; }
+.employee-tool > details > summary { list-style: none; }
+.employee-tool > details > summary::-webkit-details-marker { display: none; }
+.employee-tool__head { display: flex; align-items: center; gap: 10px; padding: 6px 2px; cursor: pointer; }
+.employee-tool__state { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; flex: none; color: #6b7a92; background: #eef1f6; }
+.employee-tool.is-succeeded .employee-tool__state { color: #fff; background: #1f9d55; }
+.employee-tool.is-failed .employee-tool__state, .employee-tool.is-blocked .employee-tool__state { color: #fff; background: #d92d20; }
+.employee-tool.is-blocked .employee-tool__label { color: #b42318; font-weight: 650; }
+.employee-tool__label { flex: 1; color: #233452; }
+.employee-tool__kind { display: inline-flex; align-items: center; gap: 4px; color: #8190a8; font-size: 11.5px; }
+.employee-tool__detail { display: block; margin: 2px 0 6px 30px; padding: 6px 8px; border-radius: 6px; background: #f1f4f8; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.employee-tool__output { margin: 0 0 8px 30px; max-height: 180px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: #0f172a; color: #e2e8f0; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.employee-message__text .cp-document p { margin: 0 0 8px; }
+.employee-message__text .cp-document p:last-child { margin-bottom: 0; }
+.employee-message__text .cp-document ul, .employee-message__text .cp-document ol { margin: 4px 0 8px; padding-left: 20px; }
+.employee-message__text .cp-document code { padding: 1px 5px; border-radius: 4px; background: #eef1f6; font-size: 12.5px; }
+.employee-spin { animation: employee-spin 0.9s linear infinite; }
+@keyframes employee-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .employee-caret, .employee-thinking > span, .employee-shimmer, .employee-spin { animation: none; } }

@@ -20,6 +20,17 @@ export type EmployeeConversationEntry = {
   timeLabel: string;
   text: string;
   sourceKind: 'conversation.user' | 'conversation.maya';
+  steps?: EmployeeStep[];
+  reasoning?: string;
+  streaming?: boolean;
+};
+export type EmployeeStep = {
+  toolCallId: string;
+  tool: string;
+  status: 'started' | 'succeeded' | 'failed';
+  thought?: string;
+  detail?: string;
+  result?: string;
 };
 export type EmployeeIncidentOutcome =
   | { status: 'none' | 'unavailable' }
@@ -248,25 +259,90 @@ function conversationText(event: Event): string | null {
   return text ? candidate : null;
 }
 
+function stepsByTurn(run: Run): Map<string, EmployeeStep[]> {
+  const turns = new Map<string, EmployeeStep[]>();
+  for (const event of [...run.events].filter(item => item.kind === 'worker.step').sort((a, b) => a.sequence - b.sequence)) {
+    const data = event.data;
+    const turnId = nonEmptyString(data.turnId);
+    const toolCallId = nonEmptyString(data.toolCallId);
+    const status = data.status;
+    if (!turnId || !toolCallId || (status !== 'started' && status !== 'succeeded' && status !== 'failed')) continue;
+    const steps = turns.get(turnId) ?? [];
+    let step = steps.find(item => item.toolCallId === toolCallId);
+    if (!step) { step = { toolCallId, tool: nonEmptyString(data.tool) || 'tool', status }; steps.push(step); }
+    step.status = status;
+    for (const key of ['thought', 'detail', 'result'] as const) {
+      const value = nonEmptyString(data[key]);
+      if (value) step[key] = value;
+    }
+    turns.set(turnId, steps);
+  }
+  return turns;
+}
+
+export function stepLabel(step: Pick<EmployeeStep, 'tool' | 'detail' | 'result' | 'status'>): { label: string; blocked: boolean } {
+  const detail = step.detail ?? '';
+  const blocked = /transaction_mismatch|turn_scope_denied|Payment differs from trusted mandate/.test(step.result ?? '');
+  if (step.tool === 'file_editor') return { label: 'Writing work note', blocked };
+  if (/\/api\/payments/.test(detail)) return { label: blocked ? 'Payment blocked by VibeSecur' : 'Submitting payment', blocked };
+  if (/\/api\/purchase-orders/.test(detail)) return { label: 'Placing purchase order', blocked };
+  if (/\/api\/inventory/.test(detail)) return { label: 'Checking inventory levels', blocked };
+  if (/\/api\/context/.test(detail)) return { label: 'Checking trusted supplier record', blocked };
+  if (/\/documents\/invoice/.test(detail)) return { label: 'Reading supplier invoice', blocked };
+  if (/\/portal/.test(detail)) return { label: 'Opening supplier portal', blocked };
+  if (step.tool === 'browser') return { label: detail ? 'Reviewing the portal page' : 'Using the browser', blocked };
+  return { label: detail ? 'Running a workspace command' : 'Working in the terminal', blocked };
+}
+
 export function conversationFromRun(run: Run | null, locale?: string): EmployeeConversationEntry[] {
   if (!run) return [];
-  return run.events
+  const steps = stepsByTurn(run);
+  const askedAt = new Map<string, number>();
+  for (const event of run.events) {
+    const turnId = nonEmptyString(event.data?.turnId);
+    if (event.kind === 'conversation.user' && turnId) askedAt.set(turnId, event.sequence);
+  }
+  const entries: EmployeeConversationEntry[] = run.events
     .filter((event) => event.kind === 'conversation.user' || event.kind === 'conversation.maya')
     .sort((left, right) => left.sequence - right.sequence)
     .flatMap((event) => {
       const text = conversationText(event);
       if (!text) return [];
       const sourceKind = event.kind as EmployeeConversationEntry['sourceKind'];
+      const turnId = nonEmptyString(event.data.turnId) || '';
+      const turnSteps = sourceKind === 'conversation.maya' ? steps.get(turnId) : undefined;
+      const asked = sourceKind === 'conversation.maya' ? askedAt.get(turnId) : undefined;
       return [{
         id: event.eventId || `${event.sequence}-${event.kind}`,
-        sequence: event.sequence,
+        sequence: asked !== undefined && asked < event.sequence ? asked + 0.5 : event.sequence,
         role: sourceKind === 'conversation.user' ? 'user' as const : 'maya' as const,
         timestamp: event.timestamp,
         timeLabel: eventTime(event.timestamp, locale),
         text,
         sourceKind,
+        ...(turnSteps?.length ? { steps: turnSteps } : {}),
       }];
     });
+  const active = run.conversation?.activeTurnId;
+  const answered = run.events.some(event => event.kind === 'conversation.maya' && event.data.turnId === active);
+  const asked = active ? run.events.find(event => event.kind === 'conversation.user' && event.data.turnId === active) : undefined;
+  if (active && asked && !answered) {
+    const live = run.live && run.live.turnId === active ? run.live : null;
+    entries.push({
+      id: `live-${active}`,
+      sequence: asked.sequence + 0.5,
+      role: 'maya',
+      timestamp: asked.timestamp,
+      timeLabel: 'Working…',
+      text: live?.text ?? '',
+      reasoning: live?.reasoning || undefined,
+      sourceKind: 'conversation.maya',
+      steps: steps.get(active) ?? [],
+      streaming: true,
+    });
+    entries.sort((left, right) => left.sequence - right.sequence);
+  }
+  return entries;
 }
 
 export function incidentOutcomeFromRun(run: Run | null): EmployeeIncidentOutcome {
@@ -412,4 +488,27 @@ export function runCreatedLabel(run: Run, locale?: string): string {
   const date = dateFromEpoch(run.createdAt);
   if (!Number.isFinite(date.getTime())) return 'Saved run';
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+export type WorkflowSuggestionKind = 'pay' | 'inspect' | 'explain' | 'receipt' | 'investigate';
+export type WorkflowSuggestion = { text: string; kind: WorkflowSuggestionKind };
+
+export function workflowSuggestions(run: Run | null): WorkflowSuggestion[] {
+  const invoice = run?.protected.invoice.invoiceId;
+  const pay = { text: invoice ? `Process invoice ${invoice} and pay the approved supplier` : 'Process the supplier invoice and pay the approved supplier', kind: 'pay' } as const;
+  const order = { text: 'Place the order for whatever is missing in my inventory', kind: 'pay' } as const;
+  if (!run) return [order, { text: 'Which inventory items are below their reorder point?', kind: 'inspect' }, pay];
+  const blocked = incidentOutcomeFromRun(run).status === 'blocked';
+  const paid = run.protected.ledger.length > 0;
+  if (blocked && paid) return [
+    { text: 'Explain what VibeSecur blocked and how you corrected it', kind: 'explain' },
+    { text: 'Show the payment receipt', kind: 'receipt' },
+    { text: 'Why did the first attempt use a different account?', kind: 'investigate' },
+  ];
+  if (blocked) return [
+    { text: 'Re-read the trusted record and retry with the approved details', kind: 'pay' },
+    { text: 'Explain the blocked change', kind: 'explain' },
+  ];
+  if (paid) return [{ text: 'Show the payment receipt', kind: 'receipt' }, { text: 'Summarize what you did', kind: 'explain' }];
+  return [order, { text: 'Which inventory items are below their reorder point?', kind: 'inspect' }, pay];
 }

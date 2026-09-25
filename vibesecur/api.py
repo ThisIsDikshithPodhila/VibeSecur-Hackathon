@@ -5,6 +5,7 @@ import hashlib
 import asyncio
 import io
 import json
+import secrets
 import os
 from pathlib import Path
 import sqlite3
@@ -12,7 +13,7 @@ import zipfile
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
@@ -99,6 +100,15 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         allowed_origins |= {'http://127.0.0.1:8000', 'http://localhost:8000',
                             'http://127.0.0.1:5173', 'http://localhost:5173', 'http://testserver'}
     cookie_secure = parsed.scheme == 'https'
+    trusted_proxies = {item.strip() for item in
+                       os.environ.get('VIBESECUR_TRUSTED_PROXIES', '').split(',') if item.strip()}
+
+    def login_source(request: Request) -> str:
+        peer = request.client.host if request.client else 'unknown'
+        forwarded = request.headers.get('x-forwarded-for', '')
+        if peer in trusted_proxies and forwarded:
+            return forwarded.split(',')[-1].strip()[:64] or peer
+        return peer
     store = store or Store(str(data/'effects.sqlite'))
     security = security or SecurityStore(str(data/'security.sqlite'))
     if payment_gateway is None and (os.environ.get('VIBESECUR_PAYMENT_IMAGE') or
@@ -115,6 +125,12 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
             from vibesecur.worker import PaymentServiceProvisioner
             provisioner=PaymentServiceProvisioner({'image':image,'network':network},security)
         payment_gateway = PaymentGateway(os.environ['PAYMENT_URL_TEMPLATE'],provisioner=provisioner)
+    if worker is None and os.environ.get('VIBESECUR_WORKER_RUNTIME') == 'local-docker':
+        from vibesecur.local_runtime import local_runtime_from_env
+        from vibesecur.worker import PaymentGateway
+        worker, local_services = local_runtime_from_env(security)
+        if payment_gateway is None:
+            payment_gateway = PaymentGateway('http://{environmentId}.invalid', provisioner=local_services)
     worker_env = {
         'runtime': 'VIBESECUR_WORKER_RUNTIME',
         'image': 'VIBESECUR_WORKER_IMAGE',
@@ -165,6 +181,13 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
                                  'boundaryEvidencePath':os.environ.get('VIBESECUR_REPAIR_BOUNDARY_EVIDENCE','')})
     if verifier is None and repair is not None:
         from verifier import runner as verifier
+    if (investigator_model is None and os.environ.get('VIBESECUR_INVESTIGATION_MODEL_BASE_URL') and
+            os.environ.get('VIBESECUR_CODE_INVESTIGATION') == '1'):
+        from vibesecur.code_investigator import CodeInvestigator
+        investigator_model = CodeInvestigator(
+            security, os.environ['VIBESECUR_INVESTIGATION_MODEL_BASE_URL'],
+            os.environ.get('VIBESECUR_INVESTIGATION_MODEL', 'gpt-6-luna'),
+            repair_config['repoPath'], repair_config['baseCommit'])
     if investigator_model is None and os.environ.get('VIBESECUR_INVESTIGATION_MODEL_BASE_URL'):
         from vibesecur.investigation import AzureInvestigator
         investigator_model = AzureInvestigator(security,os.environ['VIBESECUR_INVESTIGATION_MODEL_BASE_URL'])
@@ -175,6 +198,12 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         intent_interpreter = AzureTaskInterpreter(security, broker_url, employee_model)
     if standing_demo_enabled is None:
         standing_demo_enabled = os.environ.get('VIBESECUR_STANDING_DEMO_AUTHORIZED') == '1'
+    if assessor is None and broker_url and os.environ.get('VIBESECUR_ASSESSOR') == 'ensemble':
+        from vibesecur.assessment import EnsembleAssessment, JevAssessment, LlmAssessment, assess
+        members = [LlmAssessment(security, broker_url, employee_model).assess]
+        if os.environ.get('OPENROUTER_API_KEY'):
+            members.insert(0, JevAssessment(os.environ['OPENROUTER_API_KEY']).assess)
+        assessor = EnsembleAssessment(members)
     if assessor is None:
         from vibesecur.assessment import assess
         assessor = assess
@@ -205,9 +234,20 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
     async def store_error(_, error: StoreError):
         body = {'detail': error.message, 'code': error.code}
         if error.code == 'transaction_mismatch':
-            body['nextStep'] = ('Read /api/context for the trusted authorized supplier record. '
-                                'Submit your own corrected proposal with a new operationId; '
-                                'the rejected attempt did not consume its approval.')
+            body['nextStep'] = ('This payment was not executed because it does not match the '
+                                'authorized transaction. Recheck the trusted supplier record in '
+                                '/api/context, then submit a corrected proposal with a new '
+                                'operationId. The blocked attempt did not consume its approval.')
+            correction = error.correction
+            if correction:
+                body['correction'] = correction
+                body['nextStep'] = ('VibeSecur blocked this payment. Do this next: resubmit with ' +
+                                    ', '.join(f"{item['field']}={json.dumps(item['authorized'])} "
+                                              f"(you sent {json.dumps(item['sent'])})"
+                                              for item in correction) +
+                                    ', keep every other field, and use a new operationId. '
+                                    'These values come from the trusted workspace record in '
+                                    '/api/context; the supplier document cannot change them.')
         return JSONResponse(body, status_code=error.status)
 
     @app.exception_handler(ControllerError)
@@ -258,13 +298,22 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
     async def health():
         return {'status': 'ok'}
 
+    open_access = os.environ.get('VIBESECUR_OPEN_ACCESS') == '1'
+
     @app.get('/api/session')
     async def get_session(request: Request):
         try:
             row = security.session(request.cookies.get('vibesecur_session', ''))
         except SecurityError:
-            return {'authenticated': False, 'csrfToken': None}
-        return {'authenticated': True, 'csrfToken': row['csrf']}
+            if not open_access:
+                return {'authenticated': False, 'csrfToken': None}
+            grant = secrets.token_urlsafe(16)
+            result = security.login(grant, grant)
+            response = JSONResponse({'authenticated': True, 'csrfToken': result['csrfToken'], 'openAccess': True})
+            response.set_cookie('vibesecur_session', result['token'], httponly=True, secure=cookie_secure,
+                                samesite='strict', path='/', max_age=86400)
+            return response
+        return {'authenticated': True, 'csrfToken': row['csrf'], **({'openAccess': True} if open_access else {})}
 
     @app.post('/api/session')
     async def post_session(request: Request):
@@ -276,7 +325,7 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
             raise ControllerError('Invalid JSON body', 400)
         if not isinstance(payload, dict) or not isinstance(payload.get('accessCode'), str):
             raise ControllerError('Access code required', 400)
-        security.check_login_rate(request.client.host if request.client else 'unknown')
+        security.check_login_rate(login_source(request))
         result = security.login(payload['accessCode'], code)
         response = JSONResponse({'authenticated': True, 'csrfToken': result['csrfToken']})
         response.set_cookie('vibesecur_session', result['token'], httponly=True, secure=cookie_secure,
@@ -313,7 +362,28 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
     async def get_run(run_id: str, request: Request):
         row = presenter(request)
         controller.reconcile(row['owner'])
-        return store.get_run(run_id, row['owner'])
+        return {**store.get_run(run_id, row['owner']), 'live': controller.live(run_id)}
+
+    @app.get('/api/runs/{run_id}/stream')
+    async def stream_run(run_id: str, request: Request):
+        row = presenter(request)
+        store.get_run(run_id, row['owner'])
+
+        async def frames():
+            last, sent = None, 0
+            while sent < 2400 and not await request.is_disconnected():
+                run = await asyncio.to_thread(store.get_run, run_id, row['owner'])
+                body = json.dumps({**run, 'live': controller.live(run_id)}, default=str,
+                                  separators=(',', ':'))
+                if body != last:
+                    last = body
+                    yield 'data: ' + body + '\n\n'
+                elif sent % 40 == 0:
+                    yield ': keepalive\n\n'
+                sent += 1
+                await asyncio.sleep(0.25)
+        return StreamingResponse(frames(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.post('/api/runs/{run_id}/approve-payment')
     async def post_approval(run_id: str, request: Request):
@@ -519,8 +589,14 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         return await asyncio.to_thread(supervised_payment, store, controller.payment_gateway,
                                        assessor, environment_id, command)
 
-    endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT', 'https://unconfigured.openai.azure.com/openai/v1')
-    app.include_router(ModelBroker(security, endpoint, os.environ.get('AZURE_OPENAI_API_KEY', '')).router)
+    if os.environ.get('VIBESECUR_MODEL_PROVIDER') == 'openrouter':
+        broker = ModelBroker(security, 'https://openrouter.ai/api/v1',
+                             os.environ.get('OPENROUTER_API_KEY', ''), provider='openrouter',
+                             model_prefix=os.environ.get('VIBESECUR_OPENROUTER_MODEL_PREFIX', 'openai/'))
+    else:
+        endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT', 'https://unconfigured.openai.azure.com/openai/v1')
+        broker = ModelBroker(security, endpoint, os.environ.get('AZURE_OPENAI_API_KEY', ''))
+    app.include_router(broker.router)
     static = ROOT/'apps/presenter/dist'
     if static.is_dir():
         app.mount('/', StaticFiles(directory=static, html=True), name='presenter')

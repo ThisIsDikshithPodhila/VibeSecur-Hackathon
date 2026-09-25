@@ -116,3 +116,33 @@ def test_remote_locator_in_tool_metadata_is_blocked_before_upstream(setup,tool):
                          json={'model':'gpt-6-sol','input':'repair local source','tools':[tool]})
     assert response.status_code==403
     assert observed==[]
+
+
+def test_openrouter_relay_prefixes_model_and_keeps_key_server_side(tmp_path):
+    import json
+    security = SecurityStore(str(tmp_path/'security.db'))
+    observed = []
+    def upstream(request):
+        observed.append(request)
+        return httpx.Response(200, json={'id': 'gen-1', 'choices': []})
+    app = FastAPI()
+    app.include_router(ModelBroker(security, 'https://openrouter.ai/api/v1', 'router-secret',
+                                   transport=httpx.MockTransport(upstream), provider='openrouter',
+                                   model_prefix='openai/').router)
+    token = security.issue_model_lease('task', 'gpt-4.1')
+    response = TestClient(app).post('/model/v1/chat/completions', headers={'Authorization': 'Bearer '+token},
+                                    json={'model': 'gpt-4.1', 'messages': [{'role': 'user', 'content': 'hi'}]})
+    assert response.status_code == 200 and 'router-secret' not in response.text
+    sent = json.loads(observed[0].content)
+    assert str(observed[0].url) == 'https://openrouter.ai/api/v1/chat/completions'
+    assert observed[0].headers['authorization'] == 'Bearer router-secret'
+    assert sent['model'] == 'openai/gpt-4.1' and 'max_completion_tokens' not in sent and sent['max_tokens'] == 4096
+    with pytest.raises(ValueError):
+        ModelBroker(security, 'https://evil.example/api/v1', 'k', provider='openrouter')
+
+
+def test_azure_ai_foundry_endpoint_is_a_trusted_azure_relay(tmp_path):
+    security = SecurityStore(str(tmp_path/'security.db'))
+    ModelBroker(security, 'https://demo-resource.services.ai.azure.com/openai/v1', 'k')
+    with pytest.raises(ValueError):
+        ModelBroker(security, 'https://services.ai.azure.com.evil.example/openai/v1', 'k')
