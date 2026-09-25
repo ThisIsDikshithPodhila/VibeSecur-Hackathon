@@ -529,8 +529,14 @@ def create_app(*, data_dir: str | None = None, access_code: str | None = None,
         return await asyncio.to_thread(supervised_payment, store, controller.payment_gateway,
                                        assessor, environment_id, command)
 
-    endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT', 'https://unconfigured.openai.azure.com/openai/v1')
-    app.include_router(ModelBroker(security, endpoint, os.environ.get('AZURE_OPENAI_API_KEY', '')).router)
+    if os.environ.get('VIBESECUR_MODEL_PROVIDER') == 'openrouter':
+        broker = ModelBroker(security, 'https://openrouter.ai/api/v1',
+                             os.environ.get('OPENROUTER_API_KEY', ''), provider='openrouter',
+                             model_prefix=os.environ.get('VIBESECUR_OPENROUTER_MODEL_PREFIX', 'openai/'))
+    else:
+        endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT', 'https://unconfigured.openai.azure.com/openai/v1')
+        broker = ModelBroker(security, endpoint, os.environ.get('AZURE_OPENAI_API_KEY', ''))
+    app.include_router(broker.router)
     static = ROOT/'apps/presenter/dist'
     if static.is_dir():
         app.mount('/', StaticFiles(directory=static, html=True), name='presenter')

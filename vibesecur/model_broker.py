@@ -77,11 +77,17 @@ def local_tools_only(tools):
 
 
 class ModelBroker:
-    def __init__(self, security, endpoint, api_key, transport=None):
+    def __init__(self, security, endpoint, api_key, transport=None, provider='azure',
+                 model_prefix=''):
         parsed = urlparse(endpoint)
-        if parsed.scheme != 'https' or not parsed.hostname or not parsed.hostname.endswith('.openai.azure.com'):
+        if provider == 'openrouter':
+            if parsed.scheme != 'https' or parsed.hostname != 'openrouter.ai':
+                raise ValueError('OpenRouter relay endpoint must be https://openrouter.ai')
+        elif (provider != 'azure' or parsed.scheme != 'https' or not parsed.hostname or
+                not parsed.hostname.endswith('.openai.azure.com')):
             raise ValueError('Azure relay endpoint must be a trusted HTTPS Azure OpenAI endpoint')
         self.security, self.endpoint, self.api_key = security, endpoint.rstrip('/'), api_key
+        self.provider, self.model_prefix = provider, model_prefix
         self.transport = transport
         self.router = APIRouter()
 
@@ -126,10 +132,18 @@ class ModelBroker:
                 payload.pop('max_tokens', None)
                 payload['max_completion_tokens'] = min(int(payload.get('max_completion_tokens', lease['max_output'])), lease['max_output'])
                 payload['n'] = 1
+            if self.provider == 'openrouter':
+                payload['model'] = self.model_prefix + payload['model']
+                payload.pop('store', None)
+                if route != 'responses':
+                    payload['max_tokens'] = payload.pop('max_completion_tokens')
+                headers = {'Authorization': 'Bearer ' + self.api_key, 'X-Title': 'VibeSecur'}
+            else:
+                headers = {'api-key': self.api_key}
             client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10), transport=self.transport, trust_env=False)
             try:
                 upstream = await client.send(client.build_request('POST', self.endpoint+'/'+route,
-                    headers={'api-key': self.api_key}, json=payload), stream=True)
+                    headers=headers, json=payload), stream=True)
             except httpx.HTTPError:
                 await client.aclose()
                 return JSONResponse({'error': {'message': 'Azure inference transport failed'}}, 502)
