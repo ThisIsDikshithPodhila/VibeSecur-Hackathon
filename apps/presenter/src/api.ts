@@ -62,3 +62,9 @@ export const createIssue = (id: string, provider: 'linear' | 'jira', draft: { ti
   request<{ issue: { provider: 'linear' | 'jira'; id: string; key: string; title: string; url: string }; run: Run }>(
     `/runs/${encodeURIComponent(id)}/issues/${provider}`, 'POST', draft);
 export const exportHref = (id: string, name: string) => `${root}/runs/${encodeURIComponent(id)}/exports/${encodeURIComponent(name)}`;
+export function streamRun(id: string, onRun: (run: Run) => void): () => void {
+  if (typeof EventSource === 'undefined') return () => undefined;
+  const source = new EventSource(`${root}/runs/${encodeURIComponent(id)}/stream`, { withCredentials: true });
+  source.onmessage = event => { try { onRun(JSON.parse(event.data) as Run); } catch { /* Polling remains the fallback. */ } };
+  return () => source.close();
+}

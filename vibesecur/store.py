@@ -24,6 +24,7 @@ class StoreError(Exception):
     def __init__(self, code: str, status: int, message: str):
         super().__init__(message)
         self.code, self.status, self.message = code, status, message
+        self.correction: list[dict] | None = None
 
 
 def _fail(code: str, status: int, message: str):

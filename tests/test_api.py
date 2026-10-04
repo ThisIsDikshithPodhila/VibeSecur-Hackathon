@@ -171,3 +171,35 @@ def test_configured_payment_service_selects_separate_http_gateway(monkeypatch):
     with tempfile.TemporaryDirectory() as directory:
         app = create_app(data_dir=directory, access_code='test-presenter-code', public_origin=ORIGIN)
         assert isinstance(app.state.controller.payment_gateway,PaymentGateway)
+
+
+def test_login_rate_limit_uses_forwarded_client_only_from_trusted_proxy(monkeypatch, tmp_path):
+    monkeypatch.setenv('VIBESECUR_TRUSTED_PROXIES', 'testclient')
+    app = create_app(data_dir=str(tmp_path), access_code='test-presenter-code',
+                     public_origin='http://testserver')
+
+    def attempt(client, forwarded, index):
+        return client.post('/api/session', json={'accessCode': 'wrong'},
+                           headers={'Origin': 'http://testserver', 'Idempotency-Key': f'login-{index}',
+                                    'X-Forwarded-For': forwarded}).status_code
+
+    with TestClient(app) as client:
+        assert [attempt(client, '203.0.113.9, 198.51.100.1', i) for i in range(6)] == [401] * 5 + [429]
+        assert attempt(client, '198.51.100.2', 6) == 401
+    monkeypatch.delenv('VIBESECUR_TRUSTED_PROXIES')
+    untrusted = create_app(data_dir=str(tmp_path / 'untrusted'), access_code='test-presenter-code',
+                           public_origin='http://testserver')
+    with TestClient(untrusted) as client:
+        assert [attempt(client, f'198.51.100.{i}', i) for i in range(6)] == [401] * 5 + [429]
+
+
+def test_open_access_issues_a_session_without_an_access_code(monkeypatch):
+    monkeypatch.setenv('VIBESECUR_OPEN_ACCESS', '1')
+    with tempfile.TemporaryDirectory() as directory:
+        app = create_app(data_dir=directory, access_code='test-presenter-code', public_origin=ORIGIN)
+        with TestClient(app) as client:
+            first = client.get('/api/session').json()
+            assert first['authenticated'] is True and first['csrfToken'] and first['openAccess'] is True
+            assert client.get('/api/session').json()['csrfToken'] == first['csrfToken']
+            headers = {'Origin': ORIGIN, 'X-CSRF-Token': first['csrfToken'], 'Idempotency-Key': 'open-key'}
+            assert client.post('/api/runs', json={'mode': 'replay'}, headers=headers).status_code == 200

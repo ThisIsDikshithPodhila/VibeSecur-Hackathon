@@ -41,6 +41,7 @@ class Controller:
         self._verify_cancel = {}
         self._active_resume = set()
         self._lock = threading.Lock()
+        self._live: dict[str, dict] = {}
         self._lifecycle_lock = threading.RLock()
         self._heavy_job_lock = threading.Lock()
 
@@ -138,6 +139,11 @@ class Controller:
                                      'expiresAt': expiry})
             return self.store.get_run(run_id)
 
+    def live(self, run_id: str) -> dict | None:
+        with self._lock:
+            live = self._live.get(run_id)
+            return dict(live) if live else None
+
     def submit_message(self, run_id: str, owner: str, text: str, client_message_id: str):
         """Queue an authenticated user turn; only the isolated worker may answer it."""
         if (not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000 or
@@ -226,6 +232,8 @@ class Controller:
         """Only an authenticated request can supply a payment execution cue."""
         words = text.casefold()
         return bool(re.search(r'\bpay\b', words) or re.search(
+            r'\b(?:place|make|submit|raise|create)\b.{0,30}\b(?:order|purchase order|po)\b', words) or re.search(
+            r'\b(?:reorder|restock|replenish)\b', words) or re.search(
             r'\b(?:send|submit|execute|transfer|make|complete)\b.{0,50}'
             r'\b(?:payment|remittance|funds)\b', words))
 
@@ -272,8 +280,30 @@ class Controller:
                 if kind == 'worker.started' and isinstance(event.get('jobId'), str):
                     self.store.update_run(run_id, conversationJob={
                         'turnId': turn_id, 'jobId': event['jobId'], 'taskId': task_id})
-                    self.store.append_event(run_id, 'worker.started',
-                                            {'turnId': turn_id, 'jobId': event['jobId']})
+                    started = {'turnId': turn_id, 'jobId': event['jobId']}
+                    if event.get('boundary') in ('unmeasured_local_docker',):
+                        started['boundary'] = event['boundary']
+                    self.store.append_event(run_id, 'worker.started', started)
+                elif kind == 'worker.delta':
+                    data = event.get('payload') or {}
+                    if data.get('turnId') == turn_id and data.get('channel') in ('text', 'reasoning'):
+                        with self._lock:
+                            live = self._live.setdefault(run_id, {'turnId': turn_id, 'text': '', 'reasoning': ''})
+                            if live['turnId'] != turn_id:
+                                live.update(turnId=turn_id, text='', reasoning='')
+                            live[data['channel']] = (live[data['channel']] + str(data.get('text', '')))[-8000:]
+                elif kind == 'worker.step':
+                    data = event.get('payload') or {}
+                    if data.get('turnId') == turn_id:
+                        step = {key: data[key] for key in ('turnId', 'toolCallId', 'tool', 'status',
+                                                          'thought', 'detail', 'result') if key in data}
+                        step['provenance'] = 'untrusted_worker_narration'
+                        self.store.append_event(run_id, 'worker.step', step)
+                        if data.get('status') == 'started':
+                            with self._lock:
+                                live = self._live.get(run_id)
+                                if live and live['turnId'] == turn_id:
+                                    live.update(text='', reasoning='')
                 elif kind == 'worker.activity':
                     data = event.get('payload') if isinstance(event.get('payload'), dict) else event
                     if (data.get('turnId') == turn_id and data.get('tool') in
@@ -319,6 +349,9 @@ class Controller:
             except Exception:
                 pass
         finally:
+            with self._lock:
+                if (self._live.get(run_id) or {}).get('turnId') == turn_id:
+                    self._live.pop(run_id, None)
             self.security.revoke_task(task_id)
 
     @staticmethod
@@ -403,11 +436,11 @@ class Controller:
                         'available', 'unavailable', 'input_too_large'):
                     data['status'] = assessed['status']
                     provenance = assessed.get('provenance')
-                    from vibesecur.assessment import MODEL_REVISION
+                    from vibesecur.assessment import ASSESSOR_REVISIONS
                     pinned = (isinstance(provenance, dict) and
                               provenance.get('sourceDigest') == source_digest and
-                              assessed.get('modelRevision') == MODEL_REVISION)
-                    data['modelRevision'] = MODEL_REVISION if pinned else None
+                              assessed.get('modelRevision') in ASSESSOR_REVISIONS)
+                    data['modelRevision'] = assessed['modelRevision'] if pinned else None
                     if (assessed['status'] == 'available' and
                             pinned and
                             assessed.get('label') in ('suitable', 'purpose_mismatch') and

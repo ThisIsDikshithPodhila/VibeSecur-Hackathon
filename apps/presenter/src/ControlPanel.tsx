@@ -52,6 +52,10 @@ function Phase({ number, title, status, complete = false, active = false, childr
   </section>;
 }
 
+function Plain({ children }: { children: ReactNode }) {
+  return <p className="cp-plain"><strong>In plain English:</strong> {children}</p>;
+}
+
 function ReportField({ label, value }: { label: string; value: unknown }) {
   const parts = strings(value);
   if (!parts.length) return null;
@@ -175,7 +179,7 @@ export function ControlPanel({ run, busy, error, notice, planDraft, connection, 
   const cause = strings(investigation?.confirmedCause)[0];
   const investigating = run.state === 'investigating';
   const correction = strings(investigation?.correction);
-  const proposedText = correction.map((step, index) => `${index + 1}. ${step}`).join('\n\n');
+  const proposedText = (correction.length ? correction : strings(record(investigation?.codeInvestigation)?.remediationPlan)).map((step, index) => `${index + 1}. ${step}`).join('\n\n');
   const savedSteps = planSteps(planDraft);
   const candidate = repair?.status === 'candidate' && !!text(repair.artifactDigest);
   const repairRunning = ['starting', 'running', 'pending'].includes(text(repair?.status));
@@ -187,7 +191,16 @@ export function ControlPanel({ run, busy, error, notice, planDraft, connection, 
     epoch(approval.createdAt) >= epoch(repair?.deployedAt) && epoch(approval.expiresAt) > Date.now() &&
     (Object.keys(current) as (keyof Transaction)[]).every(key => approval.snapshot?.[key] === current[key]));
   const evidenceRefs = strings(investigation?.evidenceRefs);
+  const corrections = run.events.filter(event => event.kind === 'vibesecur.course_correction').map(event => record(event.data)).filter((item): item is RecordValue => !!item);
+  const localBoundary = run.events.some(event => event.kind === 'worker.started' && record(event.data)?.boundary === 'unmeasured_local_docker');
+  const codeInvestigation = record(investigation?.codeInvestigation);
+  const citations = Array.isArray(codeInvestigation?.citations) ? codeInvestigation.citations.map(record).filter((item): item is RecordValue => !!item) : [];
+  const codePatch = record(codeInvestigation?.patch);
   const statusText = readable(run.state);
+  const codePlan = strings(codeInvestigation?.remediationPlan);
+  const codeCause = strings(codeInvestigation?.rootCause)[0];
+  const hasFix = recoveryRequired || (codeInvestigation?.grounded === true && codePlan.length > 0);
+  const fixSteps = savedSteps.length ? savedSteps : codePlan;
 
   function openIssue(provider: IssueProvider, trigger: HTMLButtonElement) {
     issueTrigger.current = trigger;
@@ -216,21 +229,25 @@ export function ControlPanel({ run, busy, error, notice, planDraft, connection, 
           <span className="cp-incident-icon" aria-hidden="true">{blockedAttempt ? <Minus size={23}/> : <ShieldCheck size={23}/>}</span>
           <div className="cp-intro-copy"><h1 id="cp-title">{blockedAttempt ? 'Payment change blocked' : 'Review the payment change'}</h1><p>{accountChanged ? `The recorded attempt tried to send ${attemptedAmount} to a different bank account from the one approved.` : 'Review the recorded payment details and the next steps for this request.'}</p>
             <dl className="cp-impact" aria-label="Blocked attempt outcome"><div><dt>Attempted amount</dt><dd>{attemptedAmount}</dd></div><div><dt>This attempt</dt><dd data-stopped={blockedAttempt}>{blockedAttempt ? 'Nothing was sent' : 'Outcome not confirmed'}</dd></div></dl>
+            {blockedAttempt && <Plain>Maya, the AI procurement agent, tried to send {attemptedAmount} to a bank account nobody approved. VibeSecur stopped it before any money moved{paymentReceipts.length ? ', and Maya then paid the correct account' : ''}.</Plain>}
             {run.mode === 'replay' && <p className="cp-replay-note">Deterministic replay · recorded evidence</p>}
+            {run.mode === 'live' && <p className="cp-replay-note">{localBoundary ? 'Live · local Docker runtime · network boundary not measured' : 'Live runtime'}</p>}
           </div>
         </section>
-        <aside className="cp-agent-context"><div className="cp-agent-heading"><span aria-hidden="true">M</span><div><strong>Maya</strong><p>Procurement Agent</p></div></div><h2>Recorded authorization</h2>{approved ? <ul><li>Invoice {approved.invoiceId}</li><li>{money(approved.amountMinor, approved.currency)}</li><li>Account {accountLabel(approved.beneficiaryAccount)}</li></ul> : <p>No matching current approval is recorded.</p>}</aside>
+        <aside className="cp-agent-context"><div className="cp-agent-heading"><span aria-hidden="true">M</span><div><strong>Maya</strong><p>Procurement Agent</p></div></div><h2>Maya was allowed to</h2><ul><li>Check inventory and supplier records</li><li>Read supplier documents</li><li>Place the reorder with the approved supplier</li>{approved ? <li>Pay invoice {approved.invoiceId} · {money(approved.amountMinor, approved.currency)} to {accountLabel(approved.beneficiaryAccount)}</li> : <li>Pay only an approved invoice</li>}</ul></aside>
       </div>
-      <section className="cp-what-happened" aria-label="What happened"><h2>What happened</h2><div className="cp-comparison-content"><dl className="cp-payment-comparison" aria-label="Approved and attempted payment comparison"><div><dt>Approved account</dt><dd><strong>{approvedAccount ? accountLabel(approvedAccount) : 'Not recorded'}</strong></dd></div><ArrowRight size={20} aria-hidden="true"/><div><dt>Attempted account</dt><dd><strong>{attemptedAccount ? accountLabel(attemptedAccount) : 'Not confirmed'}</strong></dd></div></dl><div className="cp-stop-reason"><h3>Why it was stopped</h3><p>{blockedAttempt && accountChanged ? `The attempted account ${accountLabel(attemptedAccount)} did not match the approved account ${accountLabel(approvedAccount || '')}.` : 'The saved evidence does not confirm an account mismatch and stop.'}</p></div></div></section>
+      <section className="cp-what-happened" aria-label="What happened"><h2>What happened</h2>{accountChanged && <Plain>The supplier’s invoice told Maya to use a new bank account, and she trusted it. The approved record names a different account, so VibeSecur blocked the payment.</Plain>}<div className="cp-comparison-content"><dl className="cp-payment-comparison" aria-label="Approved and attempted payment comparison"><div><dt>Approved account</dt><dd><strong>{approvedAccount ? accountLabel(approvedAccount) : 'Not recorded'}</strong></dd></div><ArrowRight size={20} aria-hidden="true"/><div><dt>Attempted account</dt><dd><strong>{attemptedAccount ? accountLabel(attemptedAccount) : 'Not confirmed'}</strong></dd></div></dl><div className="cp-stop-reason"><h3>Why it was stopped</h3><p>{blockedAttempt && accountChanged ? `The attempted account ${accountLabel(attemptedAccount)} did not match the approved account ${accountLabel(approvedAccount || '')}.` : 'The saved evidence does not confirm an account mismatch and stop.'}</p></div></div></section>
+      {corrections.length > 0 && <section className="cp-course-corrections" aria-labelledby="cp-corrections-title"><h2 id="cp-corrections-title">VibeSecur intervened</h2>{corrections.map((item, index) => <div className="cp-correction" key={index}><Minus size={18} aria-hidden="true"/><div><p>Blocked <code>{text(item.blockedTool) || 'payment'}</code> · {readable(text(item.reason))}</p><p>Changed field{strings(item.fields).length === 1 ? '' : 's'}: {strings(item.fields).join(', ') || 'not recorded'}. Maya was told to re-read the trusted record and retry with a new operation ID.</p><p className="cp-muted">Blocked operation {text(item.operationId)}{text(item.assessmentLabel) ? ` · advisory assessment: ${readable(text(item.assessmentLabel))}` : ''}</p></div></div>)}</section>}
       {paymentReceipts.length > 0 && <section className="cp-recorded-payments" aria-label="Separate recorded payments"><h2>Recorded payments</h2><p>These receipts are separate from the blocked attempt above.</p>{paymentReceipts.map(receipt => <div className="cp-receipt" key={receipt.id}><Check size={18} aria-hidden="true"/><div><strong>{receipt.amount}</strong><p>Paid to {accountLabel(receipt.beneficiaryAccount)}</p><small>{receipt.timeLabel}</small></div></div>)}</section>}
-      {noRepair && <section className="cp-no-repair" aria-labelledby="cp-no-repair-title"><Check size={22} aria-hidden="true"/><div><h2 id="cp-no-repair-title">Course corrected · no repair required</h2><p>The investigation records a safe course correction. The blocked attempt and the authorized payment remain separate records.</p><button type="button" className="cp-button" onClick={onBack}>Back to Maya<ArrowRight size={16}/></button></div></section>}
+      {noRepair && !hasFix && <section className="cp-no-repair" aria-labelledby="cp-no-repair-title"><Check size={22} aria-hidden="true"/><div><h2 id="cp-no-repair-title">Course corrected · no repair required</h2><p>The investigation records a safe course correction. The blocked attempt and the authorized payment remain separate records.</p><button type="button" className="cp-button" onClick={onBack}>Back to Maya<ArrowRight size={16}/></button></div></section>}
       <details className="cp-disclosure cp-source-details"><summary>Payment evidence and record IDs<ChevronDown size={16}/></summary><dl className="cp-evidence-list"><div><dt>Invoice</dt><dd>{run.protected.invoice.invoiceId}</dd></div><div><dt>Run</dt><dd>{run.runId}</dd></div><div><dt>Saved state</dt><dd>{statusText}</dd></div><div><dt>Approved account</dt><dd>{approvedAccount || 'Not recorded'}</dd></div><div><dt>Attempted account</dt><dd>{attemptedAccount || 'Not confirmed'}</dd></div><div><dt>Incident source</dt><dd>{text(incident?.source) || 'Not recorded'}</dd></div><div><dt>Incident status</dt><dd>{text(incident?.status) || 'Not recorded'}</dd></div>{protectedReceipt && <><div><dt>Latest protected receipt</dt><dd>{protectedReceipt.operationId}</dd></div><div><dt>Committed beneficiary</dt><dd>{protectedReceipt.transaction.beneficiaryAccount}</dd></div><div><dt>Committed at</dt><dd>{date(protectedReceipt.committedAt)}</dd></div></>}</dl></details>
 
       <div className="cp-feedback" aria-live="polite">{(!connected || busy || pending || notice) && <p role="status">{!connected ? `Connection ${connection}. Showing the last saved records.` : pending || busy || notice}</p>}{(localError || error) && <p className="cp-error" role="alert">{localError || error}</p>}</div>
 
       <div className="cp-process">
-        <Phase number={1} title="Investigation" complete={hasReport} active={investigating} status={hasReport ? 'Report available' : investigating ? 'In progress' : 'Not available yet'}>
-          <p>{cause || (investigating ? 'The investigation is in progress. Its saved findings will appear here when available.' : hasReport ? 'Review the grounded findings and any remaining uncertainty.' : 'Investigate the recorded incident to establish the cause and prepare a correction.')}</p>
+        <Phase number={1} title={hasReport ? 'Investigation complete' : 'Investigation'} complete={hasReport} active={investigating} status={hasReport ? 'Report available' : investigating ? 'In progress' : 'Not available yet'}>
+          <p>{codeCause || cause || (investigating ? 'The investigation is in progress. Its saved findings will appear here when available.' : hasReport ? 'Review the grounded findings and any remaining uncertainty.' : 'Investigate the recorded incident to establish the cause and prepare a correction.')}</p>
+          {hasReport && hasFix && <Plain>The payment app checked the approval number and the invoice, but not the bank account. VibeSecur caught the mismatch this time; the app itself should catch it too.</Plain>}
           <ProgressDisclosure events={run.events} phase="investigation" running={investigating} runId={run.runId}/>
           {hasReport ? <details className="cp-disclosure cp-report"><summary><span><FileText size={16}/>View investigation</span><ChevronDown size={16}/></summary>
             <div className="cp-report-toolbar"><span>Saved investigation report</span><a href={exportHref(run.runId, 'incident.md')} target="_blank" rel="noreferrer"><Download size={15}/>Download report</a></div>
@@ -246,17 +263,24 @@ export function ControlPanel({ run, busy, error, notice, planDraft, connection, 
               <ReportField label="Acceptance criteria" value={investigation?.acceptanceCriteria}/>
             </div>
             <ReportField label="Remaining uncertainty" value={investigation?.uncertainty}/>
+            {codeInvestigation && <section className="cp-code-investigation" aria-label="Source investigation"><h3>Source investigation · {text(codeInvestigation.model) || 'model'} · {codeInvestigation.grounded === true ? 'grounded in cited source' : 'not grounded'}</h3>
+              <ReportField label="Root cause" value={codeInvestigation.rootCause}/>
+              <ReportField label="Remediation plan" value={codeInvestigation.remediationPlan}/>
+              {citations.length > 0 && <><h3>Cited source at {text(codeInvestigation.baseCommit).slice(0, 12)}</h3><ul className="cp-citations">{citations.map((item, index) => <li key={index} data-verified={item.verified === true}><span>{item.verified === true ? 'Verified' : 'Not found'}</span><code>{text(item.path)}:{String(item.line ?? '')}</code><pre>{text(item.quote)}</pre></li>)}</ul></>}
+              {codePatch && <details className="cp-disclosure"><summary>Proposed patch · {readable(text(codePatch.status) || 'not proposed')}<ChevronDown size={16}/></summary>{text(codePatch.patch) && <pre className="cp-patch">{text(codePatch.patch)}</pre>}<p className="cp-muted">Not applied. “Fix it” sends the saved plan to the isolated repair executor, and the result must pass independent verification.</p></details>}
+            </section>}
             <details className="cp-disclosure cp-technical-details"><summary>Technical details and original report<ChevronDown size={16}/></summary>{markdown && <IncidentDocument markdown={markdown}/>}<h3>Evidence references</h3>{evidenceRefs.length ? <ul className="cp-reference-list">{evidenceRefs.map((ref, index) => <li key={index}>{ref}</li>)}</ul> : <p>No evidence references were provided in this report.</p>}<p>Assessment status: {text(investigation?.modelStatus) || 'Not recorded'}</p></details>
           </details> : <button type="button" className="cp-button" disabled={locked || !connected || investigating} onClick={() => void perform('Requesting investigation', onInvestigate)}>Investigate incident<ArrowRight size={16}/></button>}
         </Phase>
 
-        {recoveryRequired && <>
-        <Phase number={2} title="Recovery plan" complete={!!planDraft.trim()} active={editingPlan} status={dirtyPlan ? 'Unsaved changes' : planDraft.trim() ? 'Plan saved' : 'No plan saved'}>
-          <div className="cp-plan-intro"><p>{planDraft.trim() ? 'Review the saved plan notes before requesting a repair.' : 'Start with the investigation’s proposed correction, then review and save the plan.'}</p><button type="button" className="cp-button cp-quiet" disabled={locked} aria-expanded={editingPlan} aria-controls="cp-plan-editor" onClick={() => setEditingPlan(value => !value)}><Pencil size={15}/>{editingPlan ? 'Close editor' : 'Edit plan'}</button></div>
-          {savedSteps.length > 0 && !editingPlan && <ol className="cp-plan-list">{savedSteps.map((step, index) => <li key={index}><span aria-hidden="true">{index + 1}</span><IncidentDocument markdown={step}/></li>)}</ol>}
+        {hasFix && <>
+        <Phase number={2} title="Proposed fix" complete={!!planDraft.trim()} active={editingPlan} status={dirtyPlan ? 'Unsaved changes' : planDraft.trim() ? 'Plan saved' : 'No plan saved'}>
+          <Plain>Change the payment app so it refuses any payment whose details differ from what was approved, then prove it with tests. Accept the plan, then “Fix it” hands it to the repair tool.</Plain>
+          <div className="cp-plan-intro"><p>{planDraft.trim() ? `Saved ${savedSteps.length}-step plan. Review it before requesting a repair.` : `VibeSecur prepared a ${fixSteps.length}-step plan based on the investigation.`}</p><button type="button" className="cp-button cp-quiet" disabled={locked} aria-expanded={editingPlan} aria-controls="cp-plan-editor" onClick={() => setEditingPlan(value => !value)}><Pencil size={15}/>{editingPlan ? 'Close editor' : 'Edit plan'}</button></div>
+          {fixSteps.length > 0 && !editingPlan && <ol className="cp-plan-list">{fixSteps.map((step, index) => <li key={index}><span aria-hidden="true">{index + 1}</span><IncidentDocument markdown={step}/></li>)}</ol>}
           {editingPlan && <div className="cp-plan-editor" id="cp-plan-editor"><label htmlFor="cp-plan-text">Remediation plan</label><textarea ref={planEditor} id="cp-plan-text" value={editedPlan} onChange={event => setEditedPlan(event.target.value)} rows={8} maxLength={4000} placeholder="Write the steps to correct the issue and verify the result." disabled={locked}/><div className="cp-editor-actions"><p>{dirtyPlan ? 'These edits are not saved.' : 'This text matches the saved plan.'}</p><button type="button" className="cp-button" disabled={locked || !connected || !dirtyPlan || !editedPlan.trim() || editedPlan.length > 4000} onClick={() => void perform('Saving plan', () => onSavePlan(editedPlan))}>Save plan</button></div></div>}
-          {!planDraft.trim() && proposedText && <button type="button" className="cp-button cp-quiet" disabled={locked} onClick={() => { setEditedPlan(proposedText); setEditingPlan(true); }}>Draft from investigation<Pencil size={15}/></button>}
-          {!planDraft.trim() && !proposedText && !editingPlan && <p className="cp-muted">No grounded correction is available yet. You can investigate or write a plan for review.</p>}
+          {!planDraft.trim() && proposedText && <button type="button" className="cp-button" disabled={locked || !connected} onClick={() => void perform('Saving plan', () => onSavePlan(proposedText))}>Accept this plan<Check size={15}/></button>}
+          
 
           <p className="cp-plan-scope">{run.remediationPlan?.executorBound && !dirtyPlan ? 'This saved plan is bound to the recorded repair request.' : 'The saved plan will be submitted with the repair request. The permitted repair scope stays fixed.'}</p>{connectedExecutors.length > 0 && <details className="cp-disclosure cp-executor-settings"><summary>Repair executor<ChevronDown size={16}/></summary><ul>{connectedExecutors.map(executor => <li key={executor.id}>{executor.label} · configured</li>)}</ul></details>}
           <form className="cp-composer" onSubmit={event => void send(event)}><label className="cp-sr-only" htmlFor="cp-message">Tell VibeSecur what to do next</label><textarea ref={composer} id="cp-message" rows={2} value={draft} onChange={event => setDraft(event.target.value)} placeholder="Tell VibeSecur what to do next…" disabled={locked} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}/><button type="submit" className="cp-send" aria-label="Send to VibeSecur" disabled={locked || !connected || !draft.trim()}><ArrowUp size={20}/></button></form>
@@ -273,6 +297,7 @@ export function ControlPanel({ run, busy, error, notice, planDraft, connection, 
         </Phase>
 
         <Phase number={3} title="Repair" complete={candidate} active={repairRunning} status={candidate ? 'Candidate prepared' : repair ? readable(text(repair.status) || 'Recorded') : 'Not started'}>
+          <Plain>An engineering tool (Codex) applies the fix in a separate copy of the code, so nothing live changes until the fix passes its checks.</Plain>
           <p>{candidate ? 'A repair candidate is recorded. Independent verification determines whether it fixes the issue.' : repairRunning ? 'The bounded repair attempt is running. Its saved result will appear here.' : 'Repair runs the configured bounded mission in the isolated repair environment.'}</p>
           <ProgressDisclosure events={run.events} phase="repair" running={repairRunning} runId={run.runId}/>
           {!candidate && !repairRunning && <button type="button" className="cp-button" disabled={locked || !connected || !planDraft.trim() || dirtyPlan || !connectedExecutors.length} onClick={() => void perform('Requesting bounded repair', onFix)}>Run saved plan<ArrowRight size={16}/></button>}
@@ -281,17 +306,19 @@ export function ControlPanel({ run, busy, error, notice, planDraft, connection, 
           {repair && <details className="cp-disclosure"><summary>Repair evidence<ChevronDown size={16}/></summary><dl className="cp-evidence-list"><div><dt>Executor status</dt><dd>{text(repair.status) || 'Not recorded'}</dd></div><div><dt>Candidate artifact</dt><dd>{text(repair.artifactDigest) || 'Not recorded'}</dd></div></dl><a className="cp-download" href={exportHref(run.runId, 'patch.diff')} target="_blank" rel="noreferrer"><Download size={15}/>Open patch artifact</a></details>}
         </Phase>
         <Phase number={4} title="Independent verification" complete={verified} active={run.state === 'verifying'} status={verified ? 'Passed' : run.state === 'verifying' ? 'In progress' : verification ? 'Review required' : 'Not recorded'}>
+          <Plain>A separate checker replays the bad payment, which must now fail, and the correct payment, which must still work.</Plain>
           <p>{verified ? 'The verifier passed for the current repair artifact.' : verification ? 'A matching passing result has not been recorded for the current artifact.' : 'The repair must pass independent checks before it counts as a verified fix.'}</p>
           <div className="cp-deployment"><span>Deployment</span><strong>{deployed ? 'Matching deployment and readiness probe recorded' : 'Not confirmed'}</strong></div>
           {verification && <details className="cp-disclosure"><summary>Verification and deployment evidence<ChevronDown size={16}/></summary><dl className="cp-evidence-list"><div><dt>Verifier result</dt><dd>{verification.passed === true ? 'Passed' : verification.passed === false ? 'Did not pass' : 'No final result'}</dd></div><div><dt>Verified artifact</dt><dd>{text(verification.artifactDigest) || 'Not recorded'}</dd></div><div><dt>Deployed artifact</dt><dd>{text(deployment?.artifactDigest) || 'Not recorded'}</dd></div><div><dt>Deployed at</dt><dd>{date(repair?.deployedAt)}</dd></div></dl></details>}
         </Phase>
         <Phase number={5} title="Resume the workflow" complete={resumed} active={run.state === 'resuming'} status={resumed ? 'Payment recorded' : run.state === 'resuming' ? 'In progress' : 'Not resumed'}>
+          <Plain>Once the fix is verified, Maya can carry on with her normal work.</Plain>
           <p>{resumed ? 'A resumed payment is recorded. Return to Maya to continue the conversation.' : deployed ? 'Review the current payment, give fresh exact approval, then request resumption.' : 'Resumption follows independent verification, deployment and fresh approval of the exact payment.'}</p>
           {resumed && protectedReceipt && <div className="cp-receipt"><span>Protected payment receipt</span><strong>{money(protectedReceipt.transaction.amountMinor, protectedReceipt.transaction.currency)}</strong><p>Paid to {accountLabel(protectedReceipt.transaction.beneficiaryAccount)}</p><small>{date(protectedReceipt.committedAt)}</small></div>}
           <div className="cp-return-actions">{!resumed && deployed && <><button type="button" className="cp-button" disabled={locked || !connected} onClick={() => void perform('Requesting exact payment approval', onApprovePayment)}>Approve current payment</button><button type="button" className="cp-button" disabled={locked || !connected || !freshApproval} onClick={() => void perform('Requesting payment resumption', onResume)}>Resume approved payment</button></>}<button type="button" className="cp-button cp-quiet" onClick={onBack}>Back to Maya<ArrowRight size={16}/></button></div>
         </Phase>
         </>}
-        {!recoveryRequired && !noRepair && <p className="cp-unresolved" role="status">The investigation has not established whether an application repair is needed.</p>}
+        
       </div>
     </div>
   </article>;

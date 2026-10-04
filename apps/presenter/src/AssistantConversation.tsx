@@ -1,10 +1,13 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive,
-  useExternalStoreRuntime, type AppendMessage, type ThreadMessageLike,
+  useExternalStoreRuntime, type AppendMessage, type TextMessagePartComponent,
+  type ThreadMessageLike,
 } from '@assistant-ui/react';
-import { ArrowUp, Clock3, FileText, Search, ShieldCheck, Wifi } from 'lucide-react';
-import type { EmployeeConversationEntry } from './employeeView';
+import { ArrowUp, Brain, Check, ChevronDown, CreditCard, FileText, Globe, Loader2, Receipt, Search, ShieldCheck, SquareTerminal, Wifi, X } from 'lucide-react';
+import { motion } from 'motion/react';
+import { plainStep, stepLabel, type EmployeeConversationEntry, type WorkflowSuggestion, type WorkflowSuggestionKind } from './employeeView';
+import { IncidentDocument } from './IncidentDocument';
 
 export type ConversationMarker = { id: string; sequence: number; content: ReactNode };
 type Props = {
@@ -16,21 +19,100 @@ type Props = {
   running: boolean;
   empty: ReactNode;
   feedback?: ReactNode;
+  suggestions: WorkflowSuggestion[];
   onSend: (text: string) => Promise<unknown>;
 };
-const suggestions = [
-  { text: 'Show invoice details', Icon: FileText },
-  { text: 'Check supplier status', Icon: Search },
-  { text: 'Explain the blocked change', Icon: ShieldCheck },
-  { text: 'Show pending approvals', Icon: Clock3 },
-];
+const suggestionIcons: Record<WorkflowSuggestionKind, typeof FileText> = {
+  pay: CreditCard, inspect: FileText, explain: ShieldCheck, receipt: Receipt, investigate: Search,
+};
+const toolLabels: Record<string, { label: string; Icon: typeof FileText }> = {
+  browser: { label: 'Browser', Icon: Globe },
+  terminal: { label: 'Terminal', Icon: SquareTerminal },
+  file_editor: { label: 'File editor', Icon: FileText },
+};
+const TextPart: TextMessagePartComponent = ({ text, status }) => text || status.type === 'running'
+  ? <div className="employee-message__text"><IncidentDocument markdown={text}/>{status.type === 'running' && <span className="employee-caret" aria-hidden="true"/>}</div>
+  : null;
+function ToolCard({ toolName, detail, label, blocked, status, output }: { toolName: string; detail: string; label: string; blocked: boolean; status: string; output?: string }) {
+  const { label: toolLabel, Icon } = toolLabels[toolName] ?? { label: toolName, Icon: FileText };
+  const state = blocked ? 'blocked' : status;
+  return <div className={`employee-tool is-${state}`}>
+    <details>
+      <summary className="employee-tool__head">
+        <span className="employee-tool__state" role="status" aria-label={state === 'started' ? 'Running' : state === 'failed' ? 'Failed' : state === 'blocked' ? 'Blocked' : 'Done'}>{state === 'started' ? <Loader2 size={15} className="employee-spin" aria-hidden="true"/> : state === 'failed' || state === 'blocked' ? <X size={15} aria-hidden="true"/> : <Check size={15} aria-hidden="true"/>}</span>
+        <span className="employee-tool__label">{label}</span>
+        <span className="employee-tool__kind"><Icon size={13} aria-hidden="true"/>{toolLabel}</span>
+      </summary>
+      {detail && <code className="employee-tool__detail">{detail}</code>}
+      {output && <pre className="employee-tool__output">{output}</pre>}
+    </details>
+  </div>;
+}
+function Thought({ text, running = false }: { text: string; running?: boolean }) {
+  return <details className="employee-reasoning" open={running}>
+    <summary><Brain size={14} aria-hidden="true"/><span className={running ? 'employee-shimmer' : ''}>{running ? 'Thinking…' : 'Maya’s notes'}</span></summary>
+    <p>{text}</p>
+  </details>;
+}
+const Hidden = () => null;
+const partComponents = { Text: TextPart, Reasoning: Hidden, tools: { Fallback: Hidden } };
+
+type Disclosure = 'closed' | 'summary' | 'technical';
+function WorkDetails({ entry, level, onLevel }: { entry: EmployeeConversationEntry; level: Disclosure; onLevel: (level: Disclosure) => void }) {
+  const steps = entry.steps ?? [];
+  if (!steps.length) return null;
+  const plain = steps.map(plainStep);
+  const current = entry.streaming ? [...steps].reverse().find(step => step.status === 'started') : undefined;
+  const stopped = plain.filter(step => step.blocked).length;
+  const headline = entry.streaming
+    ? `${current ? plainStep(current).doing : 'Working on it'}…`
+    : `Maya took ${steps.length} step${steps.length === 1 ? '' : 's'}${stopped ? ` · VibeSecur stepped in ${stopped === 1 ? 'once' : `${stopped} times`}` : ''}`;
+  return <div className={`employee-work${stopped ? ' has-stop' : ''}`}>
+    <button type="button" className="employee-work__toggle" aria-expanded={level !== 'closed'} onClick={() => onLevel(level === 'closed' ? 'summary' : 'closed')}>
+      {entry.streaming ? <Loader2 size={15} className="employee-spin" aria-hidden="true"/> : stopped ? <ShieldCheck size={15} aria-hidden="true"/> : <Check size={15} aria-hidden="true"/>}
+      <span className={entry.streaming ? 'employee-shimmer' : ''}>{headline}</span>
+      <span className="employee-work__more">{level === 'closed' ? 'Show details' : 'Hide details'}<ChevronDown size={14} aria-hidden="true"/></span>
+    </button>
+    {level !== 'closed' && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} transition={{ duration: 0.2 }} className="employee-work__body">
+      {level === 'summary' ? <ol className="employee-work__steps">{plain.map((step, index) => {
+        const state = step.blocked ? 'blocked' : steps[index].status === 'started' ? 'started' : step.failed ? 'failed' : 'succeeded';
+        return <li key={steps[index].toolCallId} className={`is-${state}`}>
+          <span className="employee-tool__state" aria-hidden="true">{state === 'started' ? <Loader2 size={13} className="employee-spin"/> : state === 'blocked' || state === 'failed' ? <X size={13}/> : <Check size={13}/>}</span>
+          <span>{state === 'started' ? `${step.doing}…` : state === 'failed' ? `${step.doing} didn’t work, so Maya tried another way` : step.done}</span>
+        </li>;
+      })}</ol> : <div className="employee-work__technical">
+        {steps.map(step => { const { label, blocked } = stepLabel(step); return <Fragment key={step.toolCallId}>
+          {step.thought && <Thought text={step.thought}/>}
+          <ToolCard toolName={step.tool} detail={step.detail ?? ''} label={label} blocked={blocked} status={step.status} output={step.result}/>
+        </Fragment>; })}
+        {entry.reasoning && <Thought text={entry.reasoning} running={entry.streaming}/>}
+      </div>}
+      <button type="button" className="employee-work__level" onClick={() => onLevel(level === 'technical' ? 'summary' : 'technical')}>{level === 'technical' ? 'Show the simple version' : 'Show technical details'}</button>
+    </motion.div>}
+  </div>;
+}
+
+function contentOf(entry: EmployeeConversationEntry): ThreadMessageLike['content'] {
+  const parts: Exclude<ThreadMessageLike['content'], string>[number][] = [];
+  for (const step of entry.steps ?? []) {
+    if (step.thought) parts.push({ type: 'reasoning', text: step.thought });
+    const { label, blocked } = stepLabel(step);
+    parts.push({ type: 'tool-call', toolCallId: step.toolCallId, toolName: step.tool, argsText: step.detail ?? '',
+      args: { label, blocked },
+      ...(step.status === 'started' ? {} : { result: { status: step.status, output: step.result ?? '' } }) });
+  }
+  if (entry.reasoning) parts.push({ type: 'reasoning', text: entry.reasoning });
+  if (entry.text || entry.streaming) parts.push({ type: 'text', text: entry.text });
+  return parts;
+}
 const messageDate = (value: number | string): Date | undefined => {
   const date = typeof value === 'number' ? new Date(value < 1e12 ? value * 1000 : value) : new Date(value);
   return Number.isFinite(date.getTime()) ? date : undefined;
 };
 
-export function AssistantConversation({ messages, markers, replay, busy, offline, running, empty, feedback, onSend }: Props) {
+export function AssistantConversation({ messages, markers, replay, busy, offline, running, empty, feedback, suggestions, onSend }: Props) {
   const [sending, setSending] = useState(false);
+  const [disclosures, setDisclosures] = useState<Record<string, Disclosure>>({});
   const [sendError, setSendError] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const orderedMarkers = useMemo(() => [...markers].sort((a, b) => a.sequence - b.sequence), [markers]);
@@ -40,10 +122,13 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
       id: entry.id,
       role: entry.role === 'maya' ? 'assistant' : 'user',
       createdAt: messageDate(entry.timestamp),
-      content: [{ type: 'text', text: entry.text }],
+      content: contentOf(entry),
+      ...(entry.role === 'maya'
+        ? { status: entry.streaming ? { type: 'running' } as const : { type: 'complete', reason: 'stop' } as const }
+        : {}),
     }),
-    // The durable feed supplies replies. An in-flight turn must not create a synthetic reply.
-    isRunning: false,
+    // Replies come from the durable feed and the live worker stream; nothing is synthesized here.
+    isRunning: messages.some(entry => entry.streaming),
     isDisabled: busy || sending,
     isSendDisabled: offline || running || replay,
     onNew: async (message: AppendMessage): Promise<void> => {
@@ -61,7 +146,7 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
   const firstSequence = messages[0]?.sequence ?? Infinity;
   return <AssistantRuntimeProvider runtime={runtime}>
     <ThreadPrimitive.Root className="employee-thread">
-      <ThreadPrimitive.Viewport className="employee-chat-body" scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
+      <ThreadPrimitive.Viewport className="employee-chat-body" autoScroll={running} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
         <div className="employee-conversation" role="log" aria-label="Saved conversation with Maya" aria-live="polite" aria-relevant="additions">
           {messages.length === 0 && markers.length === 0 && empty}
           {orderedMarkers.filter(marker => marker.sequence < firstSequence).map(marker => <Fragment key={marker.id}>{marker.content}</Fragment>)}
@@ -71,27 +156,32 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
             if (!entry) return null;
             const nextSequence = messages[index + 1]?.sequence ?? Infinity;
             return <>
-              <MessagePrimitive.Root className={`employee-message is-${entry.role}`}>
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, ease: 'easeOut' }}>
+              <MessagePrimitive.Root className={`employee-message is-${entry.role}${entry.streaming ? ' is-streaming' : ''}`}>
                 <span className="employee-message__avatar" aria-hidden="true">{entry.role === 'maya' ? 'M' : 'Y'}</span>
                 <div className="employee-message__content">
                   <div className="employee-message__meta"><strong>{entry.role === 'maya' ? 'Maya' : 'You'}</strong><time>{entry.timeLabel}</time></div>
-                  <p className="employee-message__text">{entry.text}</p>
+                  {entry.streaming && !entry.text && !(entry.steps?.length) && <p className="employee-thinking" role="status"><span/><span/><span/>Maya is getting started…</p>}
+                  {entry.role === 'maya' && <WorkDetails entry={entry} level={disclosures[entry.turnId ?? entry.id] ?? 'closed'}
+                    onLevel={level => setDisclosures(current => ({ ...current, [entry.turnId ?? entry.id]: level }))}/>}
+                  <MessagePrimitive.Parts components={partComponents}/>
                 </div>
               </MessagePrimitive.Root>
+              </motion.div>
               {orderedMarkers.filter(marker => marker.sequence >= entry.sequence && marker.sequence < nextSequence).map(marker => <Fragment key={marker.id}>{marker.content}</Fragment>)}
             </>;
           }}</ThreadPrimitive.Messages>
-          {running && <p className="employee-turn-status" role="status"><span aria-hidden="true"/>Maya is working on your request.</p>}
+          {running && !messages.some(entry => entry.streaming) && <p className="employee-turn-status" role="status"><span aria-hidden="true"/>Maya is working on your request.</p>}
           {feedback}
           {sendError && <p className="employee-feedback is-error" role="alert">{sendError}</p>}
         </div>
       </ThreadPrimitive.Viewport>
       <div className="employee-composer-area">
         <div className="employee-suggestions" aria-label="Message suggestions">
-          {suggestions.map(({ text, Icon }) => <ThreadPrimitive.Suggestion key={text} prompt={text} send={false} disabled={busy || sending}
+          {suggestions.map(({ text, kind }) => { const Icon = suggestionIcons[kind]; return <ThreadPrimitive.Suggestion key={text} prompt={text} send={false} disabled={busy || sending}
             onClick={() => { setSendError(null); requestAnimationFrame(() => input.current?.focus()); }}>
             <Icon size={17} aria-hidden="true"/>{text}
-          </ThreadPrimitive.Suggestion>)}
+          </ThreadPrimitive.Suggestion>; })}
         </div>
         <ComposerPrimitive.Root className="employee-composer" aria-busy={sending}>
           <label className="visually-hidden" htmlFor="employee-message">Message Maya</label>

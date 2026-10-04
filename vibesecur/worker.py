@@ -83,6 +83,31 @@ def _presenter_worker_event(event: dict) -> dict | None:
         except ValueError:
             return None
         clean = {"text": text, "turnId": turn_id, "sdkEventId": sdk_id}
+    elif kind in ("worker.step", "worker.delta"):
+        turn_id = payload.get("turnId")
+        try:
+            if not isinstance(turn_id, str) or str(UUID(turn_id)) != turn_id:
+                return None
+        except ValueError:
+            return None
+        clean = {"turnId": turn_id}
+        if kind == "worker.delta":
+            channel, text = payload.get("channel"), payload.get("text")
+            if channel not in ("text", "reasoning") or not isinstance(text, str) or not 1 <= len(text) <= 2000:
+                return None
+            clean.update(channel=channel, text=text)
+        else:
+            call_id, tool, status = payload.get("toolCallId"), payload.get("tool"), payload.get("status")
+            if (tool not in ("browser", "terminal", "file_editor") or
+                    status not in ("started", "succeeded", "failed") or
+                    not isinstance(call_id, str) or not 1 <= len(call_id) <= 128 or
+                    not call_id.isprintable()):
+                return None
+            clean.update(toolCallId=call_id, tool=tool, status=status)
+            for key, limit in (("thought", 1200), ("detail", 300), ("result", 400)):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    clean[key] = value[:limit]
     elif kind == "worker.sdk_error":
         error_type = payload.get("errorType")
         if not isinstance(error_type, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type):
