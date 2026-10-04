@@ -146,7 +146,7 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
   const firstSequence = messages[0]?.sequence ?? Infinity;
   return <AssistantRuntimeProvider runtime={runtime}>
     <ThreadPrimitive.Root className="employee-thread">
-      <ThreadPrimitive.Viewport className="employee-chat-body" scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
+      <ThreadPrimitive.Viewport className="employee-chat-body" autoScroll={running} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
         <div className="employee-conversation" role="log" aria-label="Saved conversation with Maya" aria-live="polite" aria-relevant="additions">
           {messages.length === 0 && markers.length === 0 && empty}
           {orderedMarkers.filter(marker => marker.sequence < firstSequence).map(marker => <Fragment key={marker.id}>{marker.content}</Fragment>)}
