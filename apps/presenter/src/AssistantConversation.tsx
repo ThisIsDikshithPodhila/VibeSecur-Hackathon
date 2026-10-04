@@ -1,12 +1,12 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive,
-  useExternalStoreRuntime, type AppendMessage, type ReasoningMessagePartComponent, type TextMessagePartComponent,
-  type ThreadMessageLike, type ToolCallMessagePartComponent,
+  useExternalStoreRuntime, type AppendMessage, type TextMessagePartComponent,
+  type ThreadMessageLike,
 } from '@assistant-ui/react';
-import { ArrowUp, Brain, Check, CreditCard, FileText, Globe, Loader2, Receipt, Search, ShieldCheck, SquareTerminal, Wifi, X } from 'lucide-react';
+import { ArrowUp, Brain, Check, ChevronDown, CreditCard, FileText, Globe, Loader2, Receipt, Search, ShieldCheck, SquareTerminal, Wifi, X } from 'lucide-react';
 import { motion } from 'motion/react';
-import { stepLabel, type EmployeeConversationEntry, type WorkflowSuggestion, type WorkflowSuggestionKind } from './employeeView';
+import { plainStep, stepLabel, type EmployeeConversationEntry, type WorkflowSuggestion, type WorkflowSuggestionKind } from './employeeView';
 import { IncidentDocument } from './IncidentDocument';
 
 export type ConversationMarker = { id: string; sequence: number; content: ReactNode };
@@ -33,28 +33,64 @@ const toolLabels: Record<string, { label: string; Icon: typeof FileText }> = {
 const TextPart: TextMessagePartComponent = ({ text, status }) => text || status.type === 'running'
   ? <div className="employee-message__text"><IncidentDocument markdown={text}/>{status.type === 'running' && <span className="employee-caret" aria-hidden="true"/>}</div>
   : null;
-const ReasoningPart: ReasoningMessagePartComponent = ({ text, status }) => <details className="employee-reasoning" open={status.type === 'running'}>
-  <summary><Brain size={14} aria-hidden="true"/><span className={status.type === 'running' ? 'employee-shimmer' : ''}>{status.type === 'running' ? 'Thinking…' : 'Thought'}</span></summary>
-  <p>{text}</p>
-</details>;
-const ToolPart: ToolCallMessagePartComponent = ({ toolName, args, argsText, result }) => {
+function ToolCard({ toolName, detail, label, blocked, status, output }: { toolName: string; detail: string; label: string; blocked: boolean; status: string; output?: string }) {
   const { label: toolLabel, Icon } = toolLabels[toolName] ?? { label: toolName, Icon: FileText };
-  const outcome = typeof result === 'object' && result ? result as { status?: string; output?: string } : undefined;
-  const meta = (args ?? {}) as { label?: string; blocked?: boolean };
-  const state = meta.blocked ? 'blocked' : outcome?.status ?? 'started';
-  return <motion.div className={`employee-tool is-${state}`} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2 }}>
+  const state = blocked ? 'blocked' : status;
+  return <div className={`employee-tool is-${state}`}>
     <details>
       <summary className="employee-tool__head">
         <span className="employee-tool__state" role="status" aria-label={state === 'started' ? 'Running' : state === 'failed' ? 'Failed' : state === 'blocked' ? 'Blocked' : 'Done'}>{state === 'started' ? <Loader2 size={15} className="employee-spin" aria-hidden="true"/> : state === 'failed' || state === 'blocked' ? <X size={15} aria-hidden="true"/> : <Check size={15} aria-hidden="true"/>}</span>
-        <span className={`employee-tool__label${state === 'started' ? ' employee-shimmer' : ''}`}>{meta.label || toolLabel}</span>
+        <span className="employee-tool__label">{label}</span>
         <span className="employee-tool__kind"><Icon size={13} aria-hidden="true"/>{toolLabel}</span>
       </summary>
-      {argsText && <code className="employee-tool__detail">{argsText}</code>}
-      {outcome?.output && <pre className="employee-tool__output">{outcome.output}</pre>}
+      {detail && <code className="employee-tool__detail">{detail}</code>}
+      {output && <pre className="employee-tool__output">{output}</pre>}
     </details>
-  </motion.div>;
-};
-const partComponents = { Text: TextPart, Reasoning: ReasoningPart, tools: { Fallback: ToolPart } };
+  </div>;
+}
+function Thought({ text, running = false }: { text: string; running?: boolean }) {
+  return <details className="employee-reasoning" open={running}>
+    <summary><Brain size={14} aria-hidden="true"/><span className={running ? 'employee-shimmer' : ''}>{running ? 'Thinking…' : 'Maya’s notes'}</span></summary>
+    <p>{text}</p>
+  </details>;
+}
+const Hidden = () => null;
+const partComponents = { Text: TextPart, Reasoning: Hidden, tools: { Fallback: Hidden } };
+
+type Disclosure = 'closed' | 'summary' | 'technical';
+function WorkDetails({ entry, level, onLevel }: { entry: EmployeeConversationEntry; level: Disclosure; onLevel: (level: Disclosure) => void }) {
+  const steps = entry.steps ?? [];
+  if (!steps.length) return null;
+  const plain = steps.map(plainStep);
+  const current = entry.streaming ? [...steps].reverse().find(step => step.status === 'started') : undefined;
+  const stopped = plain.filter(step => step.blocked).length;
+  const headline = entry.streaming
+    ? `${current ? plainStep(current).doing : 'Working on it'}…`
+    : `Maya took ${steps.length} step${steps.length === 1 ? '' : 's'}${stopped ? ` · VibeSecur stepped in ${stopped === 1 ? 'once' : `${stopped} times`}` : ''}`;
+  return <div className={`employee-work${stopped ? ' has-stop' : ''}`}>
+    <button type="button" className="employee-work__toggle" aria-expanded={level !== 'closed'} onClick={() => onLevel(level === 'closed' ? 'summary' : 'closed')}>
+      {entry.streaming ? <Loader2 size={15} className="employee-spin" aria-hidden="true"/> : stopped ? <ShieldCheck size={15} aria-hidden="true"/> : <Check size={15} aria-hidden="true"/>}
+      <span className={entry.streaming ? 'employee-shimmer' : ''}>{headline}</span>
+      <span className="employee-work__more">{level === 'closed' ? 'Show details' : 'Hide details'}<ChevronDown size={14} aria-hidden="true"/></span>
+    </button>
+    {level !== 'closed' && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} transition={{ duration: 0.2 }} className="employee-work__body">
+      {level === 'summary' ? <ol className="employee-work__steps">{plain.map((step, index) => {
+        const state = step.blocked ? 'blocked' : steps[index].status === 'started' ? 'started' : step.failed ? 'failed' : 'succeeded';
+        return <li key={steps[index].toolCallId} className={`is-${state}`}>
+          <span className="employee-tool__state" aria-hidden="true">{state === 'started' ? <Loader2 size={13} className="employee-spin"/> : state === 'blocked' || state === 'failed' ? <X size={13}/> : <Check size={13}/>}</span>
+          <span>{state === 'started' ? `${step.doing}…` : state === 'failed' ? `${step.doing} didn’t work, so Maya tried another way` : step.done}</span>
+        </li>;
+      })}</ol> : <div className="employee-work__technical">
+        {steps.map(step => { const { label, blocked } = stepLabel(step); return <Fragment key={step.toolCallId}>
+          {step.thought && <Thought text={step.thought}/>}
+          <ToolCard toolName={step.tool} detail={step.detail ?? ''} label={label} blocked={blocked} status={step.status} output={step.result}/>
+        </Fragment>; })}
+        {entry.reasoning && <Thought text={entry.reasoning} running={entry.streaming}/>}
+      </div>}
+      <button type="button" className="employee-work__level" onClick={() => onLevel(level === 'technical' ? 'summary' : 'technical')}>{level === 'technical' ? 'Show the simple version' : 'Show technical details'}</button>
+    </motion.div>}
+  </div>;
+}
 
 function contentOf(entry: EmployeeConversationEntry): ThreadMessageLike['content'] {
   const parts: Exclude<ThreadMessageLike['content'], string>[number][] = [];
@@ -76,6 +112,7 @@ const messageDate = (value: number | string): Date | undefined => {
 
 export function AssistantConversation({ messages, markers, replay, busy, offline, running, empty, feedback, suggestions, onSend }: Props) {
   const [sending, setSending] = useState(false);
+  const [disclosures, setDisclosures] = useState<Record<string, Disclosure>>({});
   const [sendError, setSendError] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const orderedMarkers = useMemo(() => [...markers].sort((a, b) => a.sequence - b.sequence), [markers]);
@@ -124,7 +161,9 @@ export function AssistantConversation({ messages, markers, replay, busy, offline
                 <span className="employee-message__avatar" aria-hidden="true">{entry.role === 'maya' ? 'M' : 'Y'}</span>
                 <div className="employee-message__content">
                   <div className="employee-message__meta"><strong>{entry.role === 'maya' ? 'Maya' : 'You'}</strong><time>{entry.timeLabel}</time></div>
-                  {entry.streaming && !entry.text && !entry.reasoning && !(entry.steps?.length) && <p className="employee-thinking" role="status"><span/><span/><span/>Maya is reading the workspace…</p>}
+                  {entry.streaming && !entry.text && !(entry.steps?.length) && <p className="employee-thinking" role="status"><span/><span/><span/>Maya is getting started…</p>}
+                  {entry.role === 'maya' && <WorkDetails entry={entry} level={disclosures[entry.turnId ?? entry.id] ?? 'closed'}
+                    onLevel={level => setDisclosures(current => ({ ...current, [entry.turnId ?? entry.id]: level }))}/>}
                   <MessagePrimitive.Parts components={partComponents}/>
                 </div>
               </MessagePrimitive.Root>

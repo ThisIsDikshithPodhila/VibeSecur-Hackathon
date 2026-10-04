@@ -260,3 +260,21 @@
 .employee-spin { animation: employee-spin 0.9s linear infinite; }
 @keyframes employee-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .employee-caret, .employee-thinking > span, .employee-shimmer, .employee-spin { animation: none; } }
+
+.employee-work { margin: 2px 0 10px; border: 1px solid #e3e8f0; border-radius: 12px; background: #f8fafc; overflow: hidden; }
+.employee-work.has-stop { border-color: #f5c2c7; background: #fff8f8; }
+.employee-work__toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border: 0; background: transparent; color: #233452; font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
+.employee-work.has-stop .employee-work__toggle > svg:first-child { color: #b42318; }
+.employee-work__toggle > svg:first-child { color: #1f9d55; flex: none; }
+.employee-work__toggle > span:first-of-type { flex: 1; }
+.employee-work__more { display: inline-flex; align-items: center; gap: 4px; color: #4f5d75; font-size: 12.5px; white-space: nowrap; }
+.employee-work__toggle[aria-expanded="true"] .employee-work__more svg { transform: rotate(180deg); }
+.employee-work__body { padding: 2px 12px 10px; border-top: 1px solid #e3e8f0; }
+.employee-work__steps { list-style: none; margin: 8px 0 4px; padding: 0; display: grid; gap: 6px; }
+.employee-work__steps li { display: flex; align-items: flex-start; gap: 10px; color: #233452; font-size: 13.5px; line-height: 1.45; }
+.employee-work__steps li.is-blocked { color: #b42318; font-weight: 600; }
+.employee-work__steps .employee-tool__state { width: 18px; height: 18px; margin-top: 1px; }
+.employee-work__steps li.is-succeeded .employee-tool__state { color: #fff; background: #1f9d55; }
+.employee-work__steps li.is-blocked .employee-tool__state, .employee-work__steps li.is-failed .employee-tool__state { color: #fff; background: #d92d20; }
+.employee-work__technical { margin-top: 8px; }
+.employee-work__level { margin-top: 6px; padding: 4px 0; border: 0; background: none; color: #3b5bdb; font: inherit; font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }

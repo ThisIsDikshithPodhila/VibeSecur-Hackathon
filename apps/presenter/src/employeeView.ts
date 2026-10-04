@@ -23,6 +23,7 @@ export type EmployeeConversationEntry = {
   steps?: EmployeeStep[];
   reasoning?: string;
   streaming?: boolean;
+  turnId?: string;
 };
 export type EmployeeStep = {
   toolCallId: string;
@@ -150,7 +151,7 @@ function deniedPaymentActivity(event: Event): EmployeeActivity | null {
   const confirmedDenial = confirmedPaymentDenialReasons.has(reason);
   const description = confirmedDenial
     ? reason === 'transaction_mismatch'
-      ? 'The attempted transaction did not match the approved transaction.'
+      ? 'The payment didn’t match what was approved, so no money was sent.'
       : 'The requested action exceeded the approved scope.'
     : heldPaymentDenialDescriptions[reason];
   return {
@@ -158,7 +159,7 @@ function deniedPaymentActivity(event: Event): EmployeeActivity | null {
     sequence: event.sequence,
     timestamp: event.timestamp,
     timeLabel: eventTime(event.timestamp),
-    title: confirmedDenial ? 'Payment attempt denied' : reason ? 'Payment review held' : 'Payment decision recorded',
+    title: confirmedDenial ? 'VibeSecur stopped a payment' : reason ? 'Payment review held' : 'Payment decision recorded',
     ...(description ? { description } : {}),
     status: confirmedDenial ? 'blocked' : 'recorded',
   };
@@ -172,7 +173,7 @@ function paymentDecisionActivity(event: Event): EmployeeActivity | null {
     sequence: event.sequence,
     timestamp: event.timestamp,
     timeLabel: eventTime(event.timestamp),
-    title: 'Protected payment receipt recorded',
+    title: 'Payment sent to the approved account',
     status: 'recorded',
   };
 }
@@ -294,6 +295,25 @@ export function stepLabel(step: Pick<EmployeeStep, 'tool' | 'detail' | 'result' 
   return { label: detail ? 'Running a workspace command' : 'Working in the terminal', blocked };
 }
 
+export type PlainStep = { doing: string; done: string; blocked: boolean; failed: boolean };
+
+/** Everyday wording for a worker step, for people who don't need the technical detail. */
+export function plainStep(step: Pick<EmployeeStep, 'tool' | 'detail' | 'result' | 'status'>): PlainStep {
+  const { blocked } = stepLabel(step);
+  const detail = step.detail ?? '';
+  const failed = step.status === 'failed';
+  const pick = (doing: string, done: string): PlainStep => ({ doing, done, blocked, failed });
+  if (blocked) return pick('Sending the payment', 'Tried to pay a bank account nobody approved. VibeSecur stopped it');
+  if (step.tool === 'file_editor') return pick('Making a note', 'Made a note of the work');
+  if (/\/api\/payments/.test(detail)) return pick('Sending the payment', 'Sent the payment');
+  if (/\/api\/purchase-orders/.test(detail)) return pick('Placing the order with the supplier', 'Placed the order with the supplier');
+  if (/\/api\/inventory/.test(detail)) return pick('Checking what is running low', 'Checked what is running low');
+  if (/\/api\/context/.test(detail)) return pick('Checking the approved supplier details', 'Checked the approved supplier details');
+  if (/\/documents\/invoice/.test(detail)) return pick('Reading the supplier’s invoice', 'Read the supplier’s invoice');
+  if (/\/portal/.test(detail)) return pick('Opening the supplier portal', 'Opened the supplier portal');
+  return pick('Looking something up', 'Looked something up');
+}
+
 export function conversationFromRun(run: Run | null, locale?: string): EmployeeConversationEntry[] {
   if (!run) return [];
   const steps = stepsByTurn(run);
@@ -320,6 +340,7 @@ export function conversationFromRun(run: Run | null, locale?: string): EmployeeC
         timeLabel: eventTime(event.timestamp, locale),
         text,
         sourceKind,
+        ...(turnId && sourceKind === 'conversation.maya' ? { turnId } : {}),
         ...(turnSteps?.length ? { steps: turnSteps } : {}),
       }];
     });
@@ -339,6 +360,7 @@ export function conversationFromRun(run: Run | null, locale?: string): EmployeeC
       sourceKind: 'conversation.maya',
       steps: steps.get(active) ?? [],
       streaming: true,
+      turnId: active,
     });
     entries.sort((left, right) => left.sequence - right.sequence);
   }
